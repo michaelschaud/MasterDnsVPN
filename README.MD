@@ -9,6 +9,10 @@ It features a custom **ARQ (Automatic Repeat Request)** implementation, ensuring
 
 ---
 
+⭐ If you find this project useful or interesting, please support it by giving a star to the repository! ⭐
+
+---
+
 ## ✨ Key Features
 - 🛡️ **Censorship Circumvention:** Leverages the DNS protocol to tunnel traffic through restricted environments.
 - 🔐 **Robust Security:** Supports multiple encryption methods including XOR, AES-128-GCM, AES-192-GCM, and AES-256-GCM.
