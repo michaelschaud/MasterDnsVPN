@@ -169,7 +169,8 @@ fi
 
 if [ -f "server_config.toml" ] && grep -q '"v.domain.com"' server_config.toml; then
     echo -e "${YELLOW}${BOLD}Attention:${NC} You need to set your NS Record Domain."
-    read -p ">>> Enter your Domain (e.g. vpn.example.com): " USER_DOMAIN
+    
+    read -p ">>> Enter your Domain (e.g. vpn.example.com): " USER_DOMAIN </dev/tty
     
     if [ -n "$USER_DOMAIN" ]; then
         sed -i 's/DOMAIN[[:space:]]*=[[:space:]]*\["v\.domain\.com"\]/DOMAIN = ["'"$USER_DOMAIN"'"]/' server_config.toml
