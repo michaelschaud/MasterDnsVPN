@@ -56,7 +56,7 @@ jobs:
             arch: amd64
             ext: ""
             package: tar.gz
-          - os: ubuntu-latest
+          - os: ubuntu-24.04-arm
             platform: Linux
             arch: arm64
             ext: ""
