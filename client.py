@@ -634,7 +634,9 @@ class MasterDnsVPNClient(PacketQueueMixin):
             return False
         if len(events) < max(1, self.auto_disable_min_observations):
             return False
-        if (events[-1][0] - events[0][0]) < max(
+        last_event_ts = events[len(events) - 1][0]
+        first_event_ts = events[0][0]
+        if (last_event_ts - first_event_ts) < max(
             1.0, self.auto_disable_timeout_window_seconds
         ):
             return False

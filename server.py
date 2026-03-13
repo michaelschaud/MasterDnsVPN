@@ -496,10 +496,11 @@ class MasterDnsVPNServer(PacketQueueMixin):
 
         client_upload_compression_type = 0
         client_download_compression_type = 0
-        if len(client_payload) >= 18:
-            flag = client_payload[-2]
-            compression_pref = client_payload[-1]
-            client_token = client_payload[:-2]
+        payload_len = len(client_payload)
+        if payload_len >= 18:
+            flag = client_payload[payload_len - 2]
+            compression_pref = client_payload[payload_len - 1]
+            client_token = client_payload[: payload_len - 2]
             client_upload_compression_type = normalize_compression_type(
                 (compression_pref >> 4) & 0x0F
             )
@@ -507,8 +508,8 @@ class MasterDnsVPNServer(PacketQueueMixin):
                 compression_pref & 0x0F
             )
         else:
-            flag = client_payload[-1]
-            client_token = client_payload[:-1]
+            flag = client_payload[payload_len - 1]
+            client_token = client_payload[: payload_len - 1]
 
         base_encode = flag == 1
         now = time.monotonic()
