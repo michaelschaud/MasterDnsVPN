@@ -518,35 +518,39 @@ class MasterDnsVPNServer(PacketQueueMixin):
         self, labels: str, extracted_header: Optional[dict]
     ) -> bytes:
         """Extract packet payload and apply optional decompression based on header flag."""
-        if not labels or "." not in labels:
+        try:
+            if not labels or "." not in labels:
+                return b""
+
+            payload = self.dns_parser.extract_vpn_data_from_labels(labels)
+            if not payload:
+                return b""
+
+            if not extracted_header:
+                return payload
+
+            ptype = extracted_header.get("packet_type", -1)
+            if ptype not in self.dns_parser._PT_COMP_EXT:
+                return payload
+
+            comp_type = (
+                extracted_header.get("compression_type", Compression_Type.OFF)
+                or Compression_Type.OFF
+            )
+            if comp_type == Compression_Type.OFF:
+                return payload
+
+            if not is_compression_type_available(comp_type):
+                return b""
+
+            decompressed, ok = try_decompress_payload(payload, comp_type)
+            if not ok:
+                return b""
+
+            return decompressed
+        except Exception as e:
+            self.logger.debug(f"Error extracting packet payload: {e}")
             return b""
-
-        payload = self.dns_parser.extract_vpn_data_from_labels(labels)
-        if not payload:
-            return b""
-
-        if not extracted_header:
-            return payload
-
-        ptype = extracted_header.get("packet_type", -1)
-        if ptype not in self.dns_parser._PT_COMP_EXT:
-            return payload
-
-        comp_type = (
-            extracted_header.get("compression_type", Compression_Type.OFF)
-            or Compression_Type.OFF
-        )
-        if comp_type == Compression_Type.OFF:
-            return payload
-
-        if not is_compression_type_available(comp_type):
-            return b""
-
-        decompressed, ok = try_decompress_payload(payload, comp_type)
-        if not ok:
-            return b""
-
-        return decompressed
 
     def _spawn_background_task(self, coro):
         """Create a tracked background task so shutdown can cancel and release it."""
