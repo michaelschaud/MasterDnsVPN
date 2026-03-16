@@ -119,11 +119,11 @@ For your convenience, the client executables (and servers for other OSs) are pre
 
 | Operating System (OS) | Architecture | Suitable For... | Direct Download Link |
 | :--- | :--- | :--- | :--- |
-| Windows 🪟 | `AMD64` (64-bit) | Windows 10 & 11 | [Download Windows Version â¬‡ï¸](https://github.com/masterking32/MasterDnsVPN/releases/latest/download/MasterDnsVPN_Client_Windows_AMD64.zip) |
-| macOS 🍎 | `ARM64` | Newer Macs (M1 / M2 / M3) | [Download Mac (Apple Silicon) â¬‡ï¸](https://github.com/masterking32/MasterDnsVPN/releases/latest/download/MasterDnsVPN_Client_MacOS_ARM64.zip) |
-| Linux 🐧 | `AMD64` (64-bit) | Newer distros (Ubuntu 22.04+, Debian 12+) | [Download Linux (New) â¬‡ï¸](https://github.com/masterking32/MasterDnsVPN/releases/latest/download/MasterDnsVPN_Client_Linux_AMD64.zip) |
-| Linux (Legacy) 🐧 | `AMD64` (64-bit) | Older distros (Ubuntu 20.04, Debian 11) | [Download Linux (Legacy) â¬‡ï¸](https://github.com/masterking32/MasterDnsVPN/releases/latest/download/MasterDnsVPN_Client_Linux-Legacy_AMD64.zip) |
-| Linux (ARM) 🐧 | `ARM64` | ARM servers, Raspberry Pi, etc. | [Download Linux (ARM) â¬‡ï¸](https://github.com/masterking32/MasterDnsVPN/releases/latest/download/MasterDnsVPN_Client_Linux_ARM64.zip) |
+| Windows 🪟 | `AMD64` (64-bit) | Windows 10 & 11 | [Download Windows Version ⬇️](https://github.com/masterking32/MasterDnsVPN/releases/latest/download/MasterDnsVPN_Client_Windows_AMD64.zip) |
+| macOS 🍎 | `ARM64` | Newer Macs (M1 / M2 / M3) | [Download Mac (Apple Silicon) ⬇️](https://github.com/masterking32/MasterDnsVPN/releases/latest/download/MasterDnsVPN_Client_MacOS_ARM64.zip) |
+| Linux 🐧 | `AMD64` (64-bit) | Newer distros (Ubuntu 22.04+, Debian 12+) | [Download Linux (New) ⬇️](https://github.com/masterking32/MasterDnsVPN/releases/latest/download/MasterDnsVPN_Client_Linux_AMD64.zip) |
+| Linux (Legacy) 🐧 | `AMD64` (64-bit) | Older distros (Ubuntu 20.04, Debian 11) | [Download Linux (Legacy) ⬇️](https://github.com/masterking32/MasterDnsVPN/releases/latest/download/MasterDnsVPN_Client_Linux-Legacy_AMD64.zip) |
+| Linux (ARM) 🐧 | `ARM64` | ARM servers, Raspberry Pi, etc. | [Download Linux (ARM) ⬇️](https://github.com/masterking32/MasterDnsVPN/releases/latest/download/MasterDnsVPN_Client_Linux_ARM64.zip) |
 
 *(Windows and Mac users can extract the file and immediately proceed to Section 3 for configuration).*
 
@@ -132,11 +132,11 @@ For your convenience, the client executables (and servers for other OSs) are pre
 
 | Operating System (OS) | Architecture | Suitable For... | Direct Download Link |
 | :--- | :--- | :--- | :--- |
-| Windows 🪟 | `AMD64` (64-bit) | Windows Server, Windows 10 & 11 | [Download Windows Server â¬‡ï¸](https://github.com/masterking32/MasterDnsVPN/releases/latest/download/MasterDnsVPN_Server_Windows_AMD64.zip) |
-| Linux 🐧 | `AMD64` (64-bit) | Ubuntu 22.04+, Debian 12+ servers | [Download Linux Server (New) â¬‡ï¸](https://github.com/masterking32/MasterDnsVPN/releases/latest/download/MasterDnsVPN_Server_Linux_AMD64.zip) |
-| Linux (Legacy) 🐧 | `AMD64` (64-bit) | Older servers (Ubuntu 20.04, Debian 11) | [Download Linux Server (Legacy) â¬‡ï¸](https://github.com/masterking32/MasterDnsVPN/releases/latest/download/MasterDnsVPN_Server_Linux-Legacy_AMD64.zip) |
-| Linux (ARM) 🐧 | `ARM64` | ARM cloud servers | [Download Linux Server (ARM) â¬‡ï¸](https://github.com/masterking32/MasterDnsVPN/releases/latest/download/MasterDnsVPN_Server_Linux_ARM64.zip) |
-| macOS 🍎 | `ARM64` | Newer Macs (M1 / M2 / M3) | [Download Mac Server (Apple Silicon) â¬‡ï¸](https://github.com/masterking32/MasterDnsVPN/releases/latest/download/MasterDnsVPN_Server_MacOS_ARM64.zip) |
+| Windows 🪟 | `AMD64` (64-bit) | Windows Server, Windows 10 & 11 | [Download Windows Server ⬇️](https://github.com/masterking32/MasterDnsVPN/releases/latest/download/MasterDnsVPN_Server_Windows_AMD64.zip) |
+| Linux 🐧 | `AMD64` (64-bit) | Ubuntu 22.04+, Debian 12+ servers | [Download Linux Server (New) ⬇️](https://github.com/masterking32/MasterDnsVPN/releases/latest/download/MasterDnsVPN_Server_Linux_AMD64.zip) |
+| Linux (Legacy) 🐧 | `AMD64` (64-bit) | Older servers (Ubuntu 20.04, Debian 11) | [Download Linux Server (Legacy) ⬇️](https://github.com/masterking32/MasterDnsVPN/releases/latest/download/MasterDnsVPN_Server_Linux-Legacy_AMD64.zip) |
+| Linux (ARM) 🐧 | `ARM64` | ARM cloud servers | [Download Linux Server (ARM) ⬇️](https://github.com/masterking32/MasterDnsVPN/releases/latest/download/MasterDnsVPN_Server_Linux_ARM64.zip) |
+| macOS 🍎 | `ARM64` | Newer Macs (M1 / M2 / M3) | [Download Mac Server (Apple Silicon) ⬇️](https://github.com/masterking32/MasterDnsVPN/releases/latest/download/MasterDnsVPN_Server_MacOS_ARM64.zip) |
 
 ---
 
