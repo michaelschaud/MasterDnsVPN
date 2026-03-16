@@ -111,7 +111,7 @@ AUTO_SCALE_PROFILES = true
 # Number of resolver-domain pairs tested in parallel during initial MTU scan.
 # Note: when AUTO_SCALE_PROFILES=true, runtime value is auto-tuned by list size.
 # Higher values speed up startup but increase temporary CPU/network usage.
-MTU_TEST_PARALLELISM = 10
+MTU_TEST_PARALLELISM = 6
 
 # If true, successful MTU-tested resolvers are saved to file.
 SAVE_MTU_SERVERS_TO_FILE = false
@@ -168,7 +168,7 @@ RECHECK_SERVER_INTERVAL_SECONDS = 3.0
 
 # Number of inactive resolver-domain pairs checked per background recheck cycle.
 # Note: when AUTO_SCALE_PROFILES=true, runtime value is auto-tuned by list size.
-RECHECK_BATCH_SIZE = 5
+RECHECK_BATCH_SIZE = 3
 
 # ------------------------------------------------------------------------------
 # 5) ARQ / Reliability
@@ -180,12 +180,12 @@ MAX_CONNECTION_ATTEMPTS = 10
 # Data-plane ARQ settings.
 # Rediuce ARQ_WINDOW_SIZE if your RAM is limited or if you have very high MTUs and want to reduce memory usage.
 ARQ_WINDOW_SIZE = 500
-ARQ_INITIAL_RTO = 0.5
-ARQ_MAX_RTO = 2.5
+ARQ_INITIAL_RTO = 0.6
+ARQ_MAX_RTO = 3.0
 
 # Control-plane ARQ settings (SYN/FIN/RST/SOCKS control packets).
-ARQ_CONTROL_INITIAL_RTO = 0.5
-ARQ_CONTROL_MAX_RTO = 2.5
+ARQ_CONTROL_INITIAL_RTO = 0.6
+ARQ_CONTROL_MAX_RTO = 3.0
 ARQ_CONTROL_MAX_RETRIES = 80
 
 # ------------------------------------------------------------------------------
@@ -194,14 +194,15 @@ ARQ_CONTROL_MAX_RETRIES = 80
 
 # Worker counts for receive and DNS TX loops.
 NUM_RX_WORKERS = 2
-NUM_DNS_WORKERS = 3
+NUM_DNS_WORKERS = 2
 
 # CPU thread-pool size for parser/codec offload.
 # 0 = auto (recommended). Set a positive number to force size. Set -1 to disable.
+# For a 2-core system, 2 is a safer default than an aggressive auto profile.
 CPU_WORKER_THREADS = 0
 
 # Max in-flight RX packet processing tasks.
-RX_SEMAPHORE_LIMIT = 500
+RX_SEMAPHORE_LIMIT = 256
 
 # Max closed-stream records retained for duplicate-close protection.
 MAX_CLOSED_STREAM_RECORDS = 2000

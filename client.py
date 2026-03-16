@@ -2544,13 +2544,10 @@ class MasterDnsVPNClient(PacketQueueMixin):
             try:
                 data, addr = await async_recvfrom(self.loop, self.tunnel_sock, 65536)
                 await self.rx_semaphore.acquire()
-                task = self.loop.create_task(
-                    self._process_and_route_incoming(data, addr)
-                )
-                self.rx_tasks.add(task)
-                task.add_done_callback(
-                    lambda t: (self.rx_tasks.discard(t), self.rx_semaphore.release())
-                )
+                try:
+                    await self._process_and_route_incoming(data, addr)
+                finally:
+                    self.rx_semaphore.release()
 
             except asyncio.CancelledError:
                 break

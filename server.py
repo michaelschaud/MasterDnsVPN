@@ -162,8 +162,20 @@ class MasterDnsVPNServer(PacketQueueMixin):
         self.max_concurrent_socks_connects = max(
             1, int(self.config.get("MAX_CONCURRENT_SOCKS_CONNECTS", 64))
         )
-        self.max_concurrent_requests = asyncio.Semaphore(
-            int(self.config.get("MAX_CONCURRENT_REQUESTS", 1000))
+        self.max_concurrent_requests = max(
+            1, int(self.config.get("MAX_CONCURRENT_REQUESTS", 1000))
+        )
+        self.dns_request_worker_count = max(
+            1,
+            min(
+                self.max_concurrent_requests,
+                int(
+                    self.config.get(
+                        "DNS_REQUEST_WORKERS",
+                        max(2, min(32, (os.cpu_count() or 1) * 2)),
+                    )
+                ),
+            ),
         )
         self.socks_connect_semaphore = asyncio.Semaphore(
             self.max_concurrent_socks_connects
@@ -189,6 +201,8 @@ class MasterDnsVPNServer(PacketQueueMixin):
         self.recently_closed_sessions = {}
 
         self._dns_task = None
+        self._dns_request_queue = None
+        self._dns_worker_tasks = []
         self._session_cleanup_task = None
         self._background_tasks = set()
         self.cpu_executor: Optional[concurrent.futures.ThreadPoolExecutor] = None
@@ -2339,32 +2353,48 @@ class MasterDnsVPNServer(PacketQueueMixin):
             )
         return await loop.run_in_executor(self.cpu_executor, func, *args)
 
+    async def _dns_request_worker(self) -> None:
+        """Consume DNS requests from the bounded queue without per-packet task churn."""
+        queue = self._dns_request_queue
+        assert queue is not None, "DNS request queue is not initialized."
+
+        while not self.should_stop.is_set():
+            item = None
+            try:
+                item = await queue.get()
+                if item is None:
+                    break
+
+                data, addr = item
+                await self.handle_single_request(data, addr)
+            except asyncio.CancelledError:
+                break
+            except Exception as e:
+                self.logger.debug(f"DNS request worker error: {e}")
+            finally:
+                if item is not None and queue is not None:
+                    try:
+                        queue.task_done()
+                    except ValueError:
+                        pass
+
     async def handle_dns_requests(self) -> None:
-        """Asynchronously handle incoming DNS requests and spawn a new task for each."""
+        """Receive DNS datagrams and enqueue them for a fixed worker pool."""
         assert self.udp_sock is not None, "UDP socket is not initialized."
         assert self.loop is not None, "Event loop is not initialized."
+        assert self._dns_request_queue is not None, "DNS request queue is not initialized."
         self.udp_sock.setblocking(False)
 
         loop = self.loop
         sock = self.udp_sock
-        bg_tasks = self._background_tasks
-        handle_req = self.handle_single_request
-        semaphore = self.max_concurrent_requests
+        request_queue = self._dns_request_queue
 
         while not self.should_stop.is_set():
             try:
                 data, addr = await async_recvfrom(loop, sock, 65536)
                 if len(data) < 12:
                     continue
-
-                await semaphore.acquire()
-
-                task = loop.create_task(handle_req(data, addr))
-                bg_tasks.add(task)
-
-                task.add_done_callback(
-                    lambda t: (bg_tasks.discard(t), semaphore.release())
-                )
+                await request_queue.put((data, addr))
 
             except asyncio.CancelledError:
                 break
@@ -3055,7 +3085,7 @@ class MasterDnsVPNServer(PacketQueueMixin):
                 f"<green>UDP socket bound on <blue>{host}:{port}</blue></green>"
             )
             self.logger.info(
-                f"<green>Runtime CPU cores detected: <cyan>{os.cpu_count() or 1}</cyan> | MAX_CONCURRENT_REQUESTS: <cyan>{int(self.config.get('MAX_CONCURRENT_REQUESTS', 1000))}</cyan></green>"
+                f"<green>Runtime CPU cores detected: <cyan>{os.cpu_count() or 1}</cyan> | DNS request workers: <cyan>{self.dns_request_worker_count}</cyan> | DNS queue: <cyan>{self.max_concurrent_requests}</cyan></green>"
             )
             if self.cpu_worker_threads > 0:
                 self.cpu_executor = concurrent.futures.ThreadPoolExecutor(
@@ -3084,7 +3114,14 @@ class MasterDnsVPNServer(PacketQueueMixin):
                 except Exception as e:
                     self.logger.debug(f"Failed to set SIO_UDP_CONNRESET: {e}")
 
+            self._dns_request_queue = asyncio.Queue(
+                maxsize=self.max_concurrent_requests
+            )
             self._dns_task = self.loop.create_task(self.handle_dns_requests())
+            self._dns_worker_tasks = [
+                self.loop.create_task(self._dns_request_worker())
+                for _ in range(self.dns_request_worker_count)
+            ]
             self._session_cleanup_task = self.loop.create_task(
                 self._session_cleanup_loop()
             )
@@ -3124,6 +3161,19 @@ class MasterDnsVPNServer(PacketQueueMixin):
             task = getattr(self, task_name, None)
             if task and not task.done():
                 task.cancel()
+
+        for task in getattr(self, "_dns_worker_tasks", []):
+            if task and not task.done():
+                task.cancel()
+
+        dns_worker_tasks = list(getattr(self, "_dns_worker_tasks", []))
+        if dns_worker_tasks:
+            try:
+                await asyncio.gather(*dns_worker_tasks, return_exceptions=True)
+            except Exception:
+                pass
+        self._dns_worker_tasks = []
+        self._dns_request_queue = None
 
         session_ids = list(self.sessions.keys())
         close_tasks = [self._close_session(sid) for sid in session_ids]
