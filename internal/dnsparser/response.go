@@ -1,8 +1,14 @@
+// ==============================================================================
+// MasterDnsVPN
+// Author: MasterkinG32
+// Github: https://github.com/masterking32
+// Year: 2026
+// ==============================================================================
+
 package dnsparser
 
 import (
 	"encoding/binary"
-	"fmt"
 
 	"masterdnsvpn-go/internal/enums"
 )
@@ -18,6 +24,22 @@ func BuildEmptyNoErrorResponse(request []byte) ([]byte, error) {
 	return buildResponseWithRCode(request, enums.DNSRCodeNoError)
 }
 
+func BuildEmptyNoErrorResponseFromLite(request []byte, parsed LitePacket) ([]byte, error) {
+	return buildResponseWithRCodeLite(request, parsed, enums.DNSRCodeNoError)
+}
+
+func BuildFormatErrorResponse(request []byte) ([]byte, error) {
+	return buildResponseWithRCode(request, enums.DNSRCodeFormatError)
+}
+
+func BuildRefusedResponse(request []byte) ([]byte, error) {
+	return buildResponseWithRCode(request, enums.DNSRCodeRefused)
+}
+
+func BuildRefusedResponseFromLite(request []byte, parsed LitePacket) ([]byte, error) {
+	return buildResponseWithRCodeLite(request, parsed, enums.DNSRCodeRefused)
+}
+
 func buildResponseWithRCode(request []byte, rcode uint8) ([]byte, error) {
 	if len(request) < dnsHeaderSize {
 		return nil, ErrPacketTooShort
@@ -25,7 +47,7 @@ func buildResponseWithRCode(request []byte, rcode uint8) ([]byte, error) {
 
 	header := parseHeader(request)
 	if !isLikelyDNSRequestHeader(header) {
-		return nil, fmt.Errorf("packet does not look like a supported dns request")
+		return nil, ErrNotDNSRequest
 	}
 
 	questionBytes, questionCount := extractQuestionSection(request, header)
@@ -46,6 +68,47 @@ func buildResponseWithRCode(request []byte, rcode uint8) ([]byte, error) {
 	}
 
 	return response, nil
+}
+
+func buildResponseWithRCodeLite(request []byte, parsed LitePacket, rcode uint8) ([]byte, error) {
+	if len(request) < dnsHeaderSize {
+		return nil, ErrPacketTooShort
+	}
+	if !isLikelyDNSRequestHeader(parsed.Header) {
+		return nil, ErrNotDNSRequest
+	}
+
+	questionBytes := []byte(nil)
+	questionCount := uint16(0)
+	if parsed.QuestionEndOffset >= dnsHeaderSize && parsed.QuestionEndOffset <= len(request) {
+		questionBytes = request[dnsHeaderSize:parsed.QuestionEndOffset]
+		questionCount = parsed.Header.QDCount
+	}
+
+	optRecords := extractOPTRecordsFromOffset(request, parsed.Header, parsed.QuestionEndOffset)
+
+	response := make([]byte, dnsHeaderSize+len(questionBytes)+rawRecordsLen(optRecords))
+	binary.BigEndian.PutUint16(response[0:2], parsed.Header.ID)
+	binary.BigEndian.PutUint16(response[2:4], buildResponseFlags(parsed.Header.Flags, rcode))
+	binary.BigEndian.PutUint16(response[4:6], questionCount)
+	binary.BigEndian.PutUint16(response[6:8], 0)
+	binary.BigEndian.PutUint16(response[8:10], 0)
+	binary.BigEndian.PutUint16(response[10:12], uint16(len(optRecords)))
+
+	offset := dnsHeaderSize
+	offset += copy(response[offset:], questionBytes)
+	for _, record := range optRecords {
+		offset += copy(response[offset:], record)
+	}
+
+	return response, nil
+}
+
+func LooksLikeDNSRequest(data []byte) bool {
+	if len(data) < dnsHeaderSize {
+		return false
+	}
+	return isLikelyDNSRequestHeader(parseHeader(data))
 }
 
 func isLikelyDNSRequestHeader(header Header) bool {
@@ -105,6 +168,34 @@ func extractOPTRecordsFromRequest(request []byte, header Header, canWalk bool) [
 		return nil
 	}
 
+	offset, err = skipResourceRecords(request, offset, int(header.ANCount))
+	if err != nil {
+		return nil
+	}
+
+	offset, err = skipResourceRecords(request, offset, int(header.NSCount))
+	if err != nil {
+		return nil
+	}
+
+	records, _, err := extractRawOPTRecords(request, offset, int(header.ARCount))
+	if err != nil {
+		return nil
+	}
+
+	return records
+}
+
+func extractOPTRecordsFromOffset(request []byte, header Header, questionEndOffset int) [][]byte {
+	if header.ARCount == 0 {
+		return nil
+	}
+	if questionEndOffset < dnsHeaderSize || questionEndOffset > len(request) {
+		return nil
+	}
+
+	offset := questionEndOffset
+	var err error
 	offset, err = skipResourceRecords(request, offset, int(header.ANCount))
 	if err != nil {
 		return nil
@@ -207,7 +298,7 @@ func skipName(data []byte, offset int) (int, error) {
 		return offset, ErrInvalidName
 	}
 
-	jumps := 0
+	pointerJumps := 0
 	for {
 		if offset >= len(data) {
 			return offset, ErrInvalidName
@@ -219,7 +310,7 @@ func skipName(data []byte, offset int) (int, error) {
 		}
 
 		if length&0xC0 == 0xC0 {
-			if offset+1 >= len(data) || jumps >= maxNameJumps {
+			if offset+1 >= len(data) || pointerJumps >= maxNameJumps {
 				return offset, ErrInvalidName
 			}
 
@@ -240,6 +331,5 @@ func skipName(data []byte, offset int) (int, error) {
 			return offset, ErrInvalidName
 		}
 		offset += length
-		jumps++
 	}
 }

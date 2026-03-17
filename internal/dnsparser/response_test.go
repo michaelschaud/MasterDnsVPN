@@ -1,3 +1,10 @@
+// ==============================================================================
+// MasterDnsVPN
+// Author: MasterkinG32
+// Github: https://github.com/masterking32
+// Year: 2026
+// ==============================================================================
+
 package dnsparser
 
 import (
@@ -75,6 +82,42 @@ func TestBuildEmptyNoErrorResponseMirrorsOPTRecord(t *testing.T) {
 	}
 }
 
+func TestBuildEmptyNoErrorResponseFromLitePreservesAllQuestions(t *testing.T) {
+	request := buildMultiQuestionDNSQuery(
+		0x7777,
+		[]liteQuestionSpec{
+			{Name: "example.com", Type: enums.DNSRecordTypeA, Class: enums.DNSQClassIN},
+			{Name: "example.net", Type: enums.DNSRecordTypeAAAA, Class: enums.DNSQClassIN},
+		},
+		true,
+	)
+
+	parsed, err := ParsePacketLite(request)
+	if err != nil {
+		t.Fatalf("ParsePacketLite returned error: %v", err)
+	}
+
+	response, err := BuildEmptyNoErrorResponseFromLite(request, parsed)
+	if err != nil {
+		t.Fatalf("BuildEmptyNoErrorResponseFromLite returned error: %v", err)
+	}
+
+	full, err := ParsePacket(response)
+	if err != nil {
+		t.Fatalf("ParsePacket(response) returned error: %v", err)
+	}
+
+	if len(full.Questions) != 2 {
+		t.Fatalf("unexpected question count: got=%d want=2", len(full.Questions))
+	}
+	if full.Questions[0].Name != "example.com" || full.Questions[1].Name != "example.net" {
+		t.Fatalf("unexpected question names: got=%q,%q", full.Questions[0].Name, full.Questions[1].Name)
+	}
+	if len(full.Additional) != 1 || full.Additional[0].Type != enums.DNSRecordTypeOPT {
+		t.Fatalf("response must preserve the OPT record")
+	}
+}
+
 func TestBuildEmptyNoErrorResponseFallsBackToHeaderOnly(t *testing.T) {
 	request := []byte{
 		0xCA, 0xFE,
@@ -114,6 +157,84 @@ func TestBuildEmptyNoErrorResponseRejectsNonDNS(t *testing.T) {
 
 	if _, err := BuildEmptyNoErrorResponse(request); err == nil {
 		t.Fatal("BuildEmptyNoErrorResponse should reject packets that do not look like supported DNS requests")
+	}
+}
+
+func TestBuildFormatErrorResponseUsesFORMERR(t *testing.T) {
+	request := []byte{
+		0xAB, 0xCD,
+		0x01, 0x00,
+		0x00, 0x01,
+		0x00, 0x00,
+		0x00, 0x00,
+		0x00, 0x00,
+		0x07, 'e', 'x',
+	}
+
+	response, err := BuildFormatErrorResponse(request)
+	if err != nil {
+		t.Fatalf("BuildFormatErrorResponse returned error: %v", err)
+	}
+
+	flags := binary.BigEndian.Uint16(response[2:4])
+	if got := flags & 0x000F; got != enums.DNSRCodeFormatError {
+		t.Fatalf("unexpected rcode: got=%d want=%d", got, enums.DNSRCodeFormatError)
+	}
+	if got := binary.BigEndian.Uint16(response[0:2]); got != 0xABCD {
+		t.Fatalf("unexpected response id: got=%#x want=%#x", got, 0xABCD)
+	}
+}
+
+func TestBuildRefusedResponseFromLiteUsesREFUSED(t *testing.T) {
+	request := buildDNSQuery(0x9999, "blocked.example", enums.DNSRecordTypeTXT, true)
+
+	parsed, err := ParsePacketLite(request)
+	if err != nil {
+		t.Fatalf("ParsePacketLite returned error: %v", err)
+	}
+
+	response, err := BuildRefusedResponseFromLite(request, parsed)
+	if err != nil {
+		t.Fatalf("BuildRefusedResponseFromLite returned error: %v", err)
+	}
+
+	flags := binary.BigEndian.Uint16(response[2:4])
+	if got := flags & 0x000F; got != enums.DNSRCodeRefused {
+		t.Fatalf("unexpected rcode: got=%d want=%d", got, enums.DNSRCodeRefused)
+	}
+
+	full, err := ParsePacket(response)
+	if err != nil {
+		t.Fatalf("ParsePacket(response) returned error: %v", err)
+	}
+	if len(full.Questions) != 1 {
+		t.Fatalf("unexpected question count: got=%d want=1", len(full.Questions))
+	}
+	if len(full.Additional) != 1 || full.Additional[0].Type != enums.DNSRecordTypeOPT {
+		t.Fatalf("response must preserve the OPT record")
+	}
+}
+
+func TestBuildEmptyNoErrorResponseHandlesManyLabels(t *testing.T) {
+	request := buildDNSQuery(0x2020, "a.b.c.d.e.f.g.h.i.j.k.example", enums.DNSRecordTypeA, true)
+
+	response, err := BuildEmptyNoErrorResponse(request)
+	if err != nil {
+		t.Fatalf("BuildEmptyNoErrorResponse returned error: %v", err)
+	}
+
+	parsed, err := ParsePacket(response)
+	if err != nil {
+		t.Fatalf("ParsePacket(response) returned error: %v", err)
+	}
+	if len(parsed.Questions) != 1 {
+		t.Fatalf("unexpected question count: got=%d want=1", len(parsed.Questions))
+	}
+	if parsed.Questions[0].Name != "a.b.c.d.e.f.g.h.i.j.k.example" {
+		t.Fatalf("unexpected qname: got=%q", parsed.Questions[0].Name)
+	}
+	if len(parsed.Additional) != 1 || parsed.Additional[0].Type != enums.DNSRecordTypeOPT {
+		t.Fatalf("response must preserve the OPT record")
 	}
 }
 

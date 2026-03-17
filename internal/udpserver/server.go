@@ -183,10 +183,14 @@ func (s *Server) worker(ctx context.Context, conn *net.UDPConn, reqCh <-chan req
 func (s *Server) handlePacket(packet []byte) []byte {
 	parsed, err := dnsparser.ParsePacketLite(packet)
 	if err != nil {
-		response, responseErr := dnsparser.BuildEmptyNoErrorResponse(packet)
+		if !dnsparser.LooksLikeDNSRequest(packet) {
+			return nil
+		}
+
+		response, responseErr := dnsparser.BuildFormatErrorResponse(packet)
 		if responseErr == nil {
 			s.log.Debugf(
-				"[DNS] <yellow>Malformed DNS Packet Rejected</yellow> id=<cyan>%d</cyan> action=<green>empty-noerror</green>",
+				"[DNS] <yellow>Malformed DNS Packet Rejected</yellow> id=<cyan>%d</cyan> action=<green>formerr</green>",
 				binary.BigEndian.Uint16(packet[:2]),
 			)
 			return response
@@ -196,19 +200,36 @@ func (s *Server) handlePacket(packet []byte) []byte {
 
 	if parsed.HasQuestion {
 		q := parsed.FirstQuestion
-		s.log.Debugf(
-			"[DNS] <green>Parsed Packet</green> id=<cyan>%d</cyan> qr=<cyan>%d</cyan> opcode=<cyan>%d</cyan> qd=<cyan>%d</cyan> an=<cyan>%d</cyan> ns=<cyan>%d</cyan> ar=<cyan>%d</cyan> qname=<yellow>%s</yellow> qtype=<magenta>%d</magenta> qclass=<magenta>%d</magenta>",
-			parsed.Header.ID,
-			parsed.Header.QR,
-			parsed.Header.OpCode,
-			parsed.Header.QDCount,
-			parsed.Header.ANCount,
-			parsed.Header.NSCount,
-			parsed.Header.ARCount,
-			q.Name,
-			q.Type,
-			q.Class,
-		)
+		if len(parsed.Questions) > 1 {
+			s.log.Debugf(
+				"[DNS] <green>Parsed Packet</green> id=<cyan>%d</cyan> qr=<cyan>%d</cyan> opcode=<cyan>%d</cyan> qd=<cyan>%d</cyan> an=<cyan>%d</cyan> ns=<cyan>%d</cyan> ar=<cyan>%d</cyan> first_qname=<yellow>%s</yellow> first_qtype=<magenta>%d</magenta> first_qclass=<magenta>%d</magenta> questions=<magenta>%d</magenta>",
+				parsed.Header.ID,
+				parsed.Header.QR,
+				parsed.Header.OpCode,
+				parsed.Header.QDCount,
+				parsed.Header.ANCount,
+				parsed.Header.NSCount,
+				parsed.Header.ARCount,
+				q.Name,
+				q.Type,
+				q.Class,
+				len(parsed.Questions),
+			)
+		} else {
+			s.log.Debugf(
+				"[DNS] <green>Parsed Packet</green> id=<cyan>%d</cyan> qr=<cyan>%d</cyan> opcode=<cyan>%d</cyan> qd=<cyan>%d</cyan> an=<cyan>%d</cyan> ns=<cyan>%d</cyan> ar=<cyan>%d</cyan> qname=<yellow>%s</yellow> qtype=<magenta>%d</magenta> qclass=<magenta>%d</magenta>",
+				parsed.Header.ID,
+				parsed.Header.QR,
+				parsed.Header.OpCode,
+				parsed.Header.QDCount,
+				parsed.Header.ANCount,
+				parsed.Header.NSCount,
+				parsed.Header.ARCount,
+				q.Name,
+				q.Type,
+				q.Class,
+			)
+		}
 	} else {
 		s.log.Debugf(
 			"[DNS] <green>Parsed Packet</green> id=<cyan>%d</cyan> qr=<cyan>%d</cyan> opcode=<cyan>%d</cyan> qd=<cyan>%d</cyan> an=<cyan>%d</cyan> ns=<cyan>%d</cyan> ar=<cyan>%d</cyan>",
@@ -223,10 +244,10 @@ func (s *Server) handlePacket(packet []byte) []byte {
 	}
 
 	if !s.allowDNSPacket(parsed) {
-		response, responseErr := dnsparser.BuildEmptyNoErrorResponse(packet)
+		response, responseErr := dnsparser.BuildRefusedResponseFromLite(packet, parsed)
 		if responseErr == nil {
 			s.log.Debugf(
-				"[DNS] <yellow>DNS Packet Rejected By Policy</yellow> id=<cyan>%d</cyan> action=<green>empty-noerror</green>",
+				"[DNS] <yellow>DNS Packet Rejected By Policy</yellow> id=<cyan>%d</cyan> action=<green>refused</green>",
 				parsed.Header.ID,
 			)
 			return response
@@ -234,7 +255,7 @@ func (s *Server) handlePacket(packet []byte) []byte {
 		return nil
 	}
 
-	response, responseErr := dnsparser.BuildEmptyNoErrorResponse(packet)
+	response, responseErr := dnsparser.BuildEmptyNoErrorResponseFromLite(packet, parsed)
 	if responseErr != nil {
 		return nil
 	}

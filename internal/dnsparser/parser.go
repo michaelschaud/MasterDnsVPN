@@ -1,3 +1,9 @@
+// ==============================================================================
+// MasterDnsVPN
+// Author: MasterkinG32
+// Github: https://github.com/masterking32
+// Year: 2026
+// ==============================================================================
 package dnsparser
 
 import (
@@ -11,6 +17,7 @@ var (
 	ErrInvalidName     = errors.New("invalid dns name")
 	ErrInvalidQuestion = errors.New("invalid dns question section")
 	ErrInvalidAnswer   = errors.New("invalid dns resource record section")
+	ErrNotDNSRequest   = errors.New("packet does not look like a supported dns request")
 )
 
 const (
@@ -59,9 +66,11 @@ type Packet struct {
 }
 
 type LitePacket struct {
-	Header        Header
-	FirstQuestion Question
-	HasQuestion   bool
+	Header            Header
+	Questions         []Question
+	FirstQuestion     Question
+	HasQuestion       bool
+	QuestionEndOffset int
 }
 
 func IsDNSPacket(data []byte) bool {
@@ -77,23 +86,21 @@ func ParsePacketLite(data []byte) (LitePacket, error) {
 	header := parseHeader(data)
 	packet := LitePacket{Header: header}
 	if header.QDCount == 0 {
+		packet.QuestionEndOffset = dnsHeaderSize
 		return packet, nil
 	}
 
-	name, offset, err := parseName(data, dnsHeaderSize)
+	questions, offset, err := parseQuestions(data, dnsHeaderSize, int(header.QDCount))
 	if err != nil {
 		return LitePacket{}, ErrInvalidQuestion
 	}
-	if offset+4 > len(data) {
-		return LitePacket{}, ErrInvalidQuestion
-	}
 
-	packet.FirstQuestion = Question{
-		Name:  name,
-		Type:  binary.BigEndian.Uint16(data[offset : offset+2]),
-		Class: binary.BigEndian.Uint16(data[offset+2 : offset+4]),
+	packet.Questions = questions
+	packet.QuestionEndOffset = offset
+	packet.HasQuestion = len(questions) > 0
+	if packet.HasQuestion {
+		packet.FirstQuestion = questions[0]
 	}
-	packet.HasQuestion = true
 	return packet, nil
 }
 
@@ -233,10 +240,11 @@ func parseName(data []byte, offset int) (string, int, error) {
 	}
 
 	var (
-		jumped   bool
-		jumps    int
-		origNext = offset
-		parts    []string
+		jumped    bool
+		jumps     int
+		origNext  = offset
+		name      strings.Builder
+		hasLabels bool
 	)
 
 	for {
@@ -279,15 +287,19 @@ func parseName(data []byte, offset int) (string, int, error) {
 		if end > len(data) {
 			return "", origNext, ErrInvalidName
 		}
-		parts = append(parts, string(data[offset:end]))
+		if hasLabels {
+			name.WriteByte('.')
+		}
+		name.Write(data[offset:end])
+		hasLabels = true
 		offset = end
 		if !jumped {
 			origNext = offset
 		}
 	}
 
-	if len(parts) == 0 {
+	if !hasLabels {
 		return ".", origNext, nil
 	}
-	return strings.Join(parts, "."), origNext, nil
+	return name.String(), origNext, nil
 }
