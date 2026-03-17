@@ -116,6 +116,14 @@ func (c *Codec) DecodeLowerBase36AndDecrypt(data []byte) ([]byte, error) {
 	return c.Decrypt(decoded)
 }
 
+func (c *Codec) DecodeLowerBase36StringAndDecrypt(data string) ([]byte, error) {
+	decoded, err := basecodec.DecodeLowerBase36String(data)
+	if err != nil {
+		return nil, err
+	}
+	return c.Decrypt(decoded)
+}
+
 func (c *Codec) noCrypto(data []byte) ([]byte, error) {
 	return data, nil
 }

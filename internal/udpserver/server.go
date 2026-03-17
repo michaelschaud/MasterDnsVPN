@@ -204,56 +204,11 @@ func (s *Server) handlePacket(packet []byte) []byte {
 		return nil
 	}
 
-	if parsed.HasQuestion {
-		q := parsed.FirstQuestion
-		if len(parsed.Questions) > 1 {
-			s.log.Debugf(
-				"[DNS] <green>Parsed Packet</green> id=<cyan>%d</cyan> qr=<cyan>%d</cyan> opcode=<cyan>%d</cyan> qd=<cyan>%d</cyan> an=<cyan>%d</cyan> ns=<cyan>%d</cyan> ar=<cyan>%d</cyan> first_qname=<yellow>%s</yellow> first_qtype=<magenta>%d</magenta> first_qclass=<magenta>%d</magenta> questions=<magenta>%d</magenta>",
-				parsed.Header.ID,
-				parsed.Header.QR,
-				parsed.Header.OpCode,
-				parsed.Header.QDCount,
-				parsed.Header.ANCount,
-				parsed.Header.NSCount,
-				parsed.Header.ARCount,
-				q.Name,
-				q.Type,
-				q.Class,
-				len(parsed.Questions),
-			)
-		} else {
-			s.log.Debugf(
-				"[DNS] <green>Parsed Packet</green> id=<cyan>%d</cyan> qr=<cyan>%d</cyan> opcode=<cyan>%d</cyan> qd=<cyan>%d</cyan> an=<cyan>%d</cyan> ns=<cyan>%d</cyan> ar=<cyan>%d</cyan> qname=<yellow>%s</yellow> qtype=<magenta>%d</magenta> qclass=<magenta>%d</magenta>",
-				parsed.Header.ID,
-				parsed.Header.QR,
-				parsed.Header.OpCode,
-				parsed.Header.QDCount,
-				parsed.Header.ANCount,
-				parsed.Header.NSCount,
-				parsed.Header.ARCount,
-				q.Name,
-				q.Type,
-				q.Class,
-			)
-		}
-	} else {
-		s.log.Debugf(
-			"[DNS] <green>Parsed Packet</green> id=<cyan>%d</cyan> qr=<cyan>%d</cyan> opcode=<cyan>%d</cyan> qd=<cyan>%d</cyan> an=<cyan>%d</cyan> ns=<cyan>%d</cyan> ar=<cyan>%d</cyan>",
-			parsed.Header.ID,
-			parsed.Header.QR,
-			parsed.Header.OpCode,
-			parsed.Header.QDCount,
-			parsed.Header.ANCount,
-			parsed.Header.NSCount,
-			parsed.Header.ARCount,
-		)
-	}
-
-	if !s.allowDNSPacket(parsed) {
-		response, responseErr := dnsparser.BuildRefusedResponseFromLite(packet, parsed)
+	if !parsed.HasQuestion {
+		response, responseErr := dnsparser.BuildFormatErrorResponse(packet)
 		if responseErr == nil {
 			s.log.Debugf(
-				"[DNS] <yellow>DNS Packet Rejected By Policy</yellow> id=<cyan>%d</cyan> action=<green>refused</green>",
+				"[DNS] <yellow>DNS Packet Without Question Rejected</yellow> id=<cyan>%d</cyan> action=<green>formerr</green>",
 				parsed.Header.ID,
 			)
 			return response
@@ -261,10 +216,30 @@ func (s *Server) handlePacket(packet []byte) []byte {
 		return nil
 	}
 
+	s.log.Debugf(
+		"[DNS] <green>Parsed Packet</green> id=<cyan>%d</cyan> qr=<cyan>%d</cyan> opcode=<cyan>%d</cyan> qd=<cyan>%d</cyan> an=<cyan>%d</cyan> ns=<cyan>%d</cyan> ar=<cyan>%d</cyan>",
+		parsed.Header.ID,
+		parsed.Header.QR,
+		parsed.Header.OpCode,
+		parsed.Header.QDCount,
+		parsed.Header.ANCount,
+		parsed.Header.NSCount,
+		parsed.Header.ARCount,
+	)
+
 	decision := s.domainMatcher.Match(parsed)
 	switch decision.Action {
+	case domainmatcher.ActionProcess:
+		s.log.Debugf(
+			"[VPN] <green>Accepted DNS Tunnel Candidate</green> id=<cyan>%d</cyan> domain=<yellow>%s</yellow> base=<cyan>%s</cyan> labels=<magenta>%s</magenta>",
+			parsed.Header.ID,
+			decision.RequestName,
+			decision.BaseDomain,
+			decision.Labels,
+		)
+		return s.handleTunnelCandidate(packet, parsed, decision)
 	case domainmatcher.ActionFormatError:
-		response, responseErr := dnsparser.BuildFormatErrorResponse(packet)
+		response, responseErr := dnsparser.BuildEmptyNoErrorResponseFromLite(packet, parsed)
 		if responseErr == nil {
 			s.log.Debugf(
 				"[DNS] <yellow>Malformed DNS Question</yellow> id=<cyan>%d</cyan> reason=<magenta>%s</magenta> action=<green>formerr</green>",
@@ -287,22 +262,9 @@ func (s *Server) handlePacket(packet []byte) []byte {
 			return response
 		}
 		return nil
-	case domainmatcher.ActionProcess:
-		s.log.Debugf(
-			"[VPN] <green>Accepted DNS Tunnel Candidate</green> id=<cyan>%d</cyan> domain=<yellow>%s</yellow> base=<cyan>%s</cyan> labels=<magenta>%s</magenta>",
-			parsed.Header.ID,
-			decision.RequestName,
-			decision.BaseDomain,
-			decision.Labels,
-		)
-		return s.handleTunnelCandidate(packet, parsed, decision)
 	default:
 		return nil
 	}
-}
-
-func (s *Server) allowDNSPacket(_ dnsparser.LitePacket) bool {
-	return true
 }
 
 func (s *Server) handleTunnelCandidate(packet []byte, parsed dnsparser.LitePacket, _ domainmatcher.Decision) []byte {

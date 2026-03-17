@@ -108,6 +108,7 @@ func LooksLikeDNSRequest(data []byte) bool {
 	if len(data) < dnsHeaderSize {
 		return false
 	}
+
 	return isLikelyDNSRequestHeader(parseHeader(data))
 }
 

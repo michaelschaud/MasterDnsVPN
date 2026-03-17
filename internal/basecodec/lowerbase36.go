@@ -118,6 +118,53 @@ func DecodeLowerBase36(data []byte) ([]byte, error) {
 	return decoded, nil
 }
 
+func DecodeLowerBase36String(data string) ([]byte, error) {
+	if len(data) == 0 {
+		return []byte{}, nil
+	}
+
+	leadingZeros := 0
+	for leadingZeros < len(data) && data[leadingZeros] == '0' {
+		leadingZeros++
+	}
+
+	if leadingZeros == len(data) {
+		return make([]byte, leadingZeros), nil
+	}
+
+	significant := data[leadingZeros:]
+	if len(significant) <= 12 {
+		return decodeLowerBase36SmallString(significant, leadingZeros)
+	}
+
+	decodedLE := make([]byte, 0, len(significant)*13/20+1)
+	for i := 0; i < len(significant); i++ {
+		ch := significant[i]
+		value := lowerBase36DecodeMap[ch]
+		if value == 0xFF {
+			return nil, ErrInvalidLowerBase36
+		}
+
+		carry := int(value)
+		for j := 0; j < len(decodedLE); j++ {
+			carry += int(decodedLE[j]) * 36
+			decodedLE[j] = byte(carry)
+			carry >>= 8
+		}
+		for carry > 0 {
+			decodedLE = append(decodedLE, byte(carry))
+			carry >>= 8
+		}
+	}
+
+	decoded := make([]byte, leadingZeros+len(decodedLE))
+	for i := 0; i < len(decodedLE); i++ {
+		decoded[len(decoded)-1-i] = decodedLE[i]
+	}
+
+	return decoded, nil
+}
+
 func encodeLowerBase36Small(data []byte, leadingZeros int) string {
 	var value uint64
 	for i := 0; i < len(data); i++ {
@@ -150,6 +197,29 @@ func decodeLowerBase36Small(data []byte, leadingZeros int) ([]byte, error) {
 	var value uint64
 	for _, ch := range data {
 		digit := lowerBase36DecodeMap[ch]
+		if digit == 0xFF {
+			return nil, ErrInvalidLowerBase36
+		}
+		value = value*36 + uint64(digit)
+	}
+
+	byteLen := (bits.Len64(value) + 7) / 8
+	if byteLen == 0 {
+		byteLen = 1
+	}
+
+	decoded := make([]byte, leadingZeros+byteLen)
+	for i := 0; i < byteLen; i++ {
+		decoded[len(decoded)-1-i] = byte(value)
+		value >>= 8
+	}
+	return decoded, nil
+}
+
+func decodeLowerBase36SmallString(data string, leadingZeros int) ([]byte, error) {
+	var value uint64
+	for i := 0; i < len(data); i++ {
+		digit := lowerBase36DecodeMap[data[i]]
 		if digit == 0xFF {
 			return nil, ErrInvalidLowerBase36
 		}
