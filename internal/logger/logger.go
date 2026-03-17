@@ -11,7 +11,6 @@ import (
 	"fmt"
 	"log"
 	"os"
-	"regexp"
 	"strings"
 	"time"
 )
@@ -30,7 +29,31 @@ const (
 	levelError
 )
 
-var colorTagPattern = regexp.MustCompile(`</?([a-zA-Z_]+)>`)
+var colorTagCodes = map[string]string{
+	"<black>":    "\x1b[30m",
+	"<red>":      "\x1b[31m",
+	"<green>":    "\x1b[32m",
+	"<yellow>":   "\x1b[33m",
+	"<blue>":     "\x1b[34m",
+	"<magenta>":  "\x1b[35m",
+	"<cyan>":     "\x1b[36m",
+	"<white>":    "\x1b[37m",
+	"<gray>":     "\x1b[90m",
+	"<grey>":     "\x1b[90m",
+	"<bold>":     "\x1b[1m",
+	"<reset>":    "\x1b[0m",
+	"</black>":   "\x1b[0m",
+	"</red>":     "\x1b[0m",
+	"</green>":   "\x1b[0m",
+	"</yellow>":  "\x1b[0m",
+	"</blue>":    "\x1b[0m",
+	"</magenta>": "\x1b[0m",
+	"</cyan>":    "\x1b[0m",
+	"</white>":   "\x1b[0m",
+	"</gray>":    "\x1b[0m",
+	"</grey>":    "\x1b[0m",
+	"</bold>":    "\x1b[0m",
+}
 
 func New(name, rawLevel string) *Logger {
 	return &Logger{
@@ -108,36 +131,43 @@ func colorizeLevel(level int, text string) string {
 }
 
 func renderColorTags(text string) string {
-	return colorTagPattern.ReplaceAllStringFunc(text, func(tag string) string {
-		switch strings.ToLower(tag) {
-		case "<black>":
-			return "\x1b[30m"
-		case "<red>":
-			return "\x1b[31m"
-		case "<green>":
-			return "\x1b[32m"
-		case "<yellow>":
-			return "\x1b[33m"
-		case "<blue>":
-			return "\x1b[34m"
-		case "<magenta>":
-			return "\x1b[35m"
-		case "<cyan>":
-			return "\x1b[36m"
-		case "<white>":
-			return "\x1b[37m"
-		case "<gray>", "<grey>":
-			return "\x1b[90m"
-		case "<bold>":
-			return "\x1b[1m"
-		case "<reset>":
-			return "\x1b[0m"
-		case "</black>", "</red>", "</green>", "</yellow>", "</blue>", "</magenta>", "</cyan>", "</white>", "</gray>", "</grey>", "</bold>":
-			return "\x1b[0m"
-		default:
-			return tag
+	start := strings.IndexByte(text, '<')
+	if start == -1 {
+		return text
+	}
+
+	var b strings.Builder
+	b.Grow(len(text) + 16)
+	b.WriteString(text[:start])
+
+	for i := start; i < len(text); {
+		if text[i] != '<' {
+			next := strings.IndexByte(text[i:], '<')
+			if next == -1 {
+				b.WriteString(text[i:])
+				break
+			}
+			b.WriteString(text[i : i+next])
+			i += next
+			continue
 		}
-	})
+
+		end := strings.IndexByte(text[i:], '>')
+		if end == -1 {
+			b.WriteString(text[i:])
+			break
+		}
+
+		tag := strings.ToLower(text[i : i+end+1])
+		if code, ok := colorTagCodes[tag]; ok {
+			b.WriteString(code)
+		} else {
+			b.WriteString(text[i : i+end+1])
+		}
+		i += end + 1
+	}
+
+	return b.String()
 }
 
 func NowUnixNano() int64 {

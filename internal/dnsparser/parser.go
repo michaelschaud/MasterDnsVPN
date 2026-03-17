@@ -246,6 +246,7 @@ func parseName(data []byte, offset int) (string, int, error) {
 		name      strings.Builder
 		hasLabels bool
 	)
+	name.Grow(64)
 
 	for {
 		if offset >= len(data) {
