@@ -489,6 +489,46 @@ func TestHandlePacketPingReturnsQueuedStreamPacket(t *testing.T) {
 	}
 }
 
+func TestStreamOutboundStoreSupportsWindowAndOutOfOrderAck(t *testing.T) {
+	store := newStreamOutboundStore()
+	now := time.Now()
+
+	store.Enqueue(7, VpnProto.Packet{
+		PacketType:  Enums.PACKET_STREAM_DATA,
+		StreamID:    11,
+		SequenceNum: 1,
+		Payload:     []byte("one"),
+	})
+	store.Enqueue(7, VpnProto.Packet{
+		PacketType:  Enums.PACKET_STREAM_DATA,
+		StreamID:    11,
+		SequenceNum: 2,
+		Payload:     []byte("two"),
+	})
+
+	first, ok := store.Next(7, now)
+	if !ok || first.SequenceNum != 1 {
+		t.Fatalf("unexpected first outbound packet: ok=%v packet=%+v", ok, first)
+	}
+	second, ok := store.Next(7, now)
+	if !ok || second.SequenceNum != 2 {
+		t.Fatalf("unexpected second outbound packet: ok=%v packet=%+v", ok, second)
+	}
+
+	if !store.Ack(7, Enums.PACKET_STREAM_DATA_ACK, 11, 2) {
+		t.Fatal("expected out-of-order ack to clear second pending packet")
+	}
+	if store.Ack(7, Enums.PACKET_STREAM_DATA_ACK, 11, 9) {
+		t.Fatal("unexpected ack match for unknown sequence")
+	}
+	if !store.Ack(7, Enums.PACKET_STREAM_DATA_ACK, 11, 1) {
+		t.Fatal("expected first packet ack to clear remaining pending packet")
+	}
+	if _, ok := store.Next(7, now); ok {
+		t.Fatal("expected no pending outbound packet after all acks")
+	}
+}
+
 func TestHandlePacketRespondsToStreamLifecyclePackets(t *testing.T) {
 	codec, err := security.NewCodec(0, "")
 	if err != nil {

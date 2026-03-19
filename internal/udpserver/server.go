@@ -615,7 +615,7 @@ func (s *Server) handlePingRequest(questionPacket []byte, decision domainmatcher
 	if !ok {
 		return nil
 	}
-	if queued, ok := s.streamOutbound.Next(vpnPacket.SessionID); ok {
+	if queued, ok := s.streamOutbound.Next(vpnPacket.SessionID, time.Now()); ok {
 		return s.buildSessionVPNResponse(questionPacket, decision.RequestName, sessionRecord, queued)
 	}
 
@@ -976,7 +976,7 @@ func (s *Server) handleStreamAckPacket(questionPacket []byte, decision domainmat
 		_, _ = s.streams.Touch(vpnPacket.SessionID, vpnPacket.StreamID, vpnPacket.SequenceNum, time.Now())
 		s.streamOutbound.Ack(vpnPacket.SessionID, vpnPacket.PacketType, vpnPacket.StreamID, vpnPacket.SequenceNum)
 	}
-	if queued, ok := s.streamOutbound.Next(vpnPacket.SessionID); ok {
+	if queued, ok := s.streamOutbound.Next(vpnPacket.SessionID, time.Now()); ok {
 		return s.buildSessionVPNResponse(questionPacket, decision.RequestName, sessionRecord, queued)
 	}
 	return s.buildSessionVPNResponse(questionPacket, decision.RequestName, sessionRecord, VpnProto.Packet{

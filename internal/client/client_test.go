@@ -1135,10 +1135,55 @@ func TestClientStreamTXLoopAdvancesQueueOnDataAck(t *testing.T) {
 
 	stream.mu.Lock()
 	queueLen := len(stream.TXQueue)
-	pendingNil := stream.TXPending == nil
+	inflightLen := len(stream.TXInFlight)
 	stream.mu.Unlock()
-	if queueLen != 0 || !pendingNil {
-		t.Fatalf("expected queue to drain after acks, queueLen=%d pendingNil=%t", queueLen, pendingNil)
+	if queueLen != 0 || inflightLen != 0 {
+		t.Fatalf("expected queue to drain after acks, queueLen=%d inflightLen=%d", queueLen, inflightLen)
+	}
+}
+
+func TestClientStreamTXAckRemovesOutOfOrderInflightPacket(t *testing.T) {
+	c := New(config.ClientConfig{}, nil, nil)
+	serverConn, clientConn := net.Pipe()
+	defer serverConn.Close()
+	defer clientConn.Close()
+
+	stream := c.createStream(21, serverConn)
+	defer c.deleteStream(stream.ID)
+
+	for _, payload := range [][]byte{[]byte("one"), []byte("two"), []byte("three")} {
+		if err := c.queueStreamPacket(stream, Enums.PACKET_STREAM_DATA, payload); err != nil {
+			t.Fatalf("queueStreamPacket returned error: %v", err)
+		}
+	}
+
+	if packet, waitFor, stop := nextClientStreamTX(stream); stop || packet == nil || waitFor != 0 {
+		t.Fatalf("expected first inflight packet, stop=%v packet=%v wait=%v", stop, packet, waitFor)
+	}
+	if packet, waitFor, stop := nextClientStreamTX(stream); stop || packet == nil || waitFor != 0 {
+		t.Fatalf("expected second inflight packet, stop=%v packet=%v wait=%v", stop, packet, waitFor)
+	}
+
+	stream.mu.Lock()
+	beforeAckLen := len(stream.TXInFlight)
+	if len(stream.TXInFlight) < 2 {
+		stream.mu.Unlock()
+		t.Fatalf("expected at least 2 inflight packets, got=%d", len(stream.TXInFlight))
+	}
+	secondSeq := stream.TXInFlight[1].SequenceNum
+	stream.mu.Unlock()
+
+	ackClientStreamTX(stream, secondSeq)
+
+	stream.mu.Lock()
+	defer stream.mu.Unlock()
+	if len(stream.TXInFlight) != beforeAckLen-1 {
+		t.Fatalf("expected inflight queue to shrink by one after out-of-order ack, before=%d after=%d", beforeAckLen, len(stream.TXInFlight))
+	}
+	for _, packet := range stream.TXInFlight {
+		if packet.SequenceNum == secondSeq {
+			t.Fatal("acked packet must be removed from inflight queue")
+		}
 	}
 }
 

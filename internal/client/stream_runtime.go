@@ -20,6 +20,7 @@ import (
 const maxClientStreamFollowUps = 16
 const streamTXInitialRetryDelay = 350 * time.Millisecond
 const streamTXMaxRetryDelay = 2 * time.Second
+const clientStreamTXWindowSize = 4
 
 var ErrClientStreamClosed = errors.New("client stream closed")
 
@@ -30,6 +31,7 @@ func (c *Client) createStream(streamID uint16, conn net.Conn) *clientStream {
 		NextSequence:   2,
 		LastActivityAt: time.Now(),
 		TXQueue:        make([]clientStreamTXPacket, 0, 8),
+		TXInFlight:     make([]clientStreamTXPacket, 0, clientStreamTXWindowSize),
 		TXWake:         make(chan struct{}, 1),
 		StopCh:         make(chan struct{}),
 	}
@@ -271,14 +273,19 @@ func (c *Client) runClientStreamTXLoop(stream *clientStream, timeout time.Durati
 
 		response, err := c.exchangeStreamControlPacket(packet.PacketType, stream.ID, packet.SequenceNum, packet.Payload, timeout)
 		if err != nil {
-			rescheduleClientStreamTX(stream)
+			rescheduleClientStreamTX(stream, packet.SequenceNum)
 			continue
 		}
+		acked := ackClientStreamTXByResponse(stream, packet.PacketType, response)
 		if err := c.handleFollowUpServerPacket(response, timeout); err != nil {
-			rescheduleClientStreamTX(stream)
+			if !acked {
+				rescheduleClientStreamTX(stream, packet.SequenceNum)
+			}
 			continue
 		}
-		ackClientStreamTX(stream, packet.SequenceNum)
+		if !acked {
+			rescheduleClientStreamTX(stream, packet.SequenceNum)
+		}
 		if streamFinished(stream) {
 			c.deleteStream(stream.ID)
 			return
@@ -292,43 +299,63 @@ func nextClientStreamTX(stream *clientStream) (*clientStreamTXPacket, time.Durat
 	if stream.Closed {
 		return nil, 0, true
 	}
-	if stream.TXPending == nil && len(stream.TXQueue) != 0 {
+	now := time.Now()
+	for len(stream.TXInFlight) < clientStreamTXWindowSize && len(stream.TXQueue) != 0 {
 		packet := stream.TXQueue[0]
 		stream.TXQueue[0] = clientStreamTXPacket{}
 		stream.TXQueue = stream.TXQueue[1:]
-		packet.RetryAt = time.Now()
-		stream.TXPending = &packet
+		if packet.RetryDelay <= 0 {
+			packet.RetryDelay = streamTXInitialRetryDelay
+		}
+		packet.RetryAt = now
+		stream.TXInFlight = append(stream.TXInFlight, packet)
 	}
-	if stream.TXPending == nil {
+	if len(stream.TXInFlight) == 0 {
 		return nil, 0, false
 	}
-	waitFor := time.Until(stream.TXPending.RetryAt)
-	if waitFor < 0 {
-		waitFor = 0
+
+	selectedIdx := -1
+	minWait := time.Duration(-1)
+	for idx := range stream.TXInFlight {
+		waitFor := time.Until(stream.TXInFlight[idx].RetryAt)
+		if waitFor <= 0 {
+			selectedIdx = idx
+			minWait = 0
+			break
+		}
+		if minWait < 0 || waitFor < minWait {
+			minWait = waitFor
+		}
 	}
-	packet := *stream.TXPending
-	return &packet, waitFor, false
+	if selectedIdx < 0 {
+		return nil, minWait, false
+	}
+	packet := stream.TXInFlight[selectedIdx]
+	return &packet, minWait, false
 }
 
-func rescheduleClientStreamTX(stream *clientStream) {
+func rescheduleClientStreamTX(stream *clientStream, sequenceNum uint16) {
 	if stream == nil {
 		return
 	}
 	stream.mu.Lock()
 	defer stream.mu.Unlock()
-	if stream.TXPending == nil {
+	for idx := range stream.TXInFlight {
+		if stream.TXInFlight[idx].SequenceNum != sequenceNum {
+			continue
+		}
+		delay := stream.TXInFlight[idx].RetryDelay
+		if delay <= 0 {
+			delay = streamTXInitialRetryDelay
+		}
+		stream.TXInFlight[idx].RetryAt = time.Now().Add(delay)
+		delay *= 2
+		if delay > streamTXMaxRetryDelay {
+			delay = streamTXMaxRetryDelay
+		}
+		stream.TXInFlight[idx].RetryDelay = delay
 		return
 	}
-	delay := stream.TXPending.RetryDelay
-	if delay <= 0 {
-		delay = streamTXInitialRetryDelay
-	}
-	stream.TXPending.RetryAt = time.Now().Add(delay)
-	delay *= 2
-	if delay > streamTXMaxRetryDelay {
-		delay = streamTXMaxRetryDelay
-	}
-	stream.TXPending.RetryDelay = delay
 }
 
 func ackClientStreamTX(stream *clientStream, sequenceNum uint16) {
@@ -337,10 +364,30 @@ func ackClientStreamTX(stream *clientStream, sequenceNum uint16) {
 	}
 	stream.mu.Lock()
 	defer stream.mu.Unlock()
-	if stream.TXPending == nil || stream.TXPending.SequenceNum != sequenceNum {
+	for idx := range stream.TXInFlight {
+		if stream.TXInFlight[idx].SequenceNum != sequenceNum {
+			continue
+		}
+		copy(stream.TXInFlight[idx:], stream.TXInFlight[idx+1:])
+		lastIdx := len(stream.TXInFlight) - 1
+		stream.TXInFlight[lastIdx] = clientStreamTXPacket{}
+		stream.TXInFlight = stream.TXInFlight[:lastIdx]
 		return
 	}
-	stream.TXPending = nil
+}
+
+func ackClientStreamTXByResponse(stream *clientStream, sentPacketType uint8, response VpnProto.Packet) bool {
+	if stream == nil {
+		return false
+	}
+	if !matchesClientStreamAck(sentPacketType, response.PacketType) {
+		return false
+	}
+	if response.StreamID != stream.ID {
+		return false
+	}
+	ackClientStreamTX(stream, response.SequenceNum)
+	return true
 }
 
 func notifyStreamWake(stream *clientStream) {
@@ -416,4 +463,17 @@ func closeWriteConn(conn net.Conn) {
 func sequenceSeenOrOlder(last uint16, current uint16) bool {
 	diff := uint16(current - last)
 	return diff == 0 || diff >= 0x8000
+}
+
+func matchesClientStreamAck(sentType uint8, ackType uint8) bool {
+	switch sentType {
+	case Enums.PACKET_STREAM_DATA:
+		return ackType == Enums.PACKET_STREAM_DATA_ACK
+	case Enums.PACKET_STREAM_FIN:
+		return ackType == Enums.PACKET_STREAM_FIN_ACK
+	case Enums.PACKET_STREAM_RST:
+		return ackType == Enums.PACKET_STREAM_RST_ACK
+	default:
+		return false
+	}
 }

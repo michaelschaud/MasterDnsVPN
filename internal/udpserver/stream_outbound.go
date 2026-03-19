@@ -9,19 +9,30 @@ package udpserver
 
 import (
 	"sync"
+	"time"
 
 	Enums "masterdnsvpn-go/internal/enums"
 	VpnProto "masterdnsvpn-go/internal/vpnproto"
 )
+
+const streamOutboundWindowSize = 4
+const streamOutboundInitialRetryDelay = 350 * time.Millisecond
+const streamOutboundMaxRetryDelay = 2 * time.Second
 
 type streamOutboundStore struct {
 	mu       sync.Mutex
 	sessions map[uint8]*streamOutboundSession
 }
 
+type outboundPendingPacket struct {
+	Packet     VpnProto.Packet
+	RetryAt    time.Time
+	RetryDelay time.Duration
+}
+
 type streamOutboundSession struct {
 	queue   []VpnProto.Packet
-	pending *VpnProto.Packet
+	pending []outboundPendingPacket
 }
 
 func newStreamOutboundStore() *streamOutboundStore {
@@ -40,7 +51,8 @@ func (s *streamOutboundStore) Enqueue(sessionID uint8, packet VpnProto.Packet) {
 	session := s.sessions[sessionID]
 	if session == nil {
 		session = &streamOutboundSession{
-			queue: make([]VpnProto.Packet, 0, 8),
+			queue:   make([]VpnProto.Packet, 0, 8),
+			pending: make([]outboundPendingPacket, 0, streamOutboundWindowSize),
 		}
 		s.sessions[sessionID] = session
 	}
@@ -48,7 +60,7 @@ func (s *streamOutboundStore) Enqueue(sessionID uint8, packet VpnProto.Packet) {
 	session.queue = append(session.queue, packet)
 }
 
-func (s *streamOutboundStore) Next(sessionID uint8) (VpnProto.Packet, bool) {
+func (s *streamOutboundStore) Next(sessionID uint8, now time.Time) (VpnProto.Packet, bool) {
 	if s == nil {
 		return VpnProto.Packet{}, false
 	}
@@ -59,21 +71,39 @@ func (s *streamOutboundStore) Next(sessionID uint8) (VpnProto.Packet, bool) {
 	if session == nil {
 		return VpnProto.Packet{}, false
 	}
-	if session.pending != nil {
-		packet := *session.pending
-		packet.Payload = append([]byte(nil), packet.Payload...)
-		return packet, true
+	if len(session.pending) < streamOutboundWindowSize && len(session.queue) != 0 {
+		packet := session.queue[0]
+		session.queue[0] = VpnProto.Packet{}
+		session.queue = session.queue[1:]
+		session.pending = append(session.pending, outboundPendingPacket{
+			Packet:     packet,
+			RetryAt:    now.Add(streamOutboundInitialRetryDelay),
+			RetryDelay: streamOutboundInitialRetryDelay,
+		})
+		return cloneOutboundPacket(packet), true
 	}
-	if len(session.queue) == 0 {
+	selectedIdx := -1
+	for idx := range session.pending {
+		if !session.pending[idx].RetryAt.After(now) {
+			selectedIdx = idx
+			break
+		}
+	}
+	if selectedIdx < 0 {
 		return VpnProto.Packet{}, false
 	}
-
-	packet := session.queue[0]
-	session.queue[0] = VpnProto.Packet{}
-	session.queue = session.queue[1:]
-	session.pending = &packet
-	packet.Payload = append([]byte(nil), packet.Payload...)
-	return packet, true
+	packet := session.pending[selectedIdx].Packet
+	delay := session.pending[selectedIdx].RetryDelay
+	if delay <= 0 {
+		delay = streamOutboundInitialRetryDelay
+	}
+	session.pending[selectedIdx].RetryAt = now.Add(delay)
+	delay *= 2
+	if delay > streamOutboundMaxRetryDelay {
+		delay = streamOutboundMaxRetryDelay
+	}
+	session.pending[selectedIdx].RetryDelay = delay
+	return cloneOutboundPacket(packet), true
 }
 
 func (s *streamOutboundStore) Ack(sessionID uint8, packetType uint8, streamID uint16, sequenceNum uint16) bool {
@@ -84,21 +114,27 @@ func (s *streamOutboundStore) Ack(sessionID uint8, packetType uint8, streamID ui
 	defer s.mu.Unlock()
 
 	session := s.sessions[sessionID]
-	if session == nil || session.pending == nil {
+	if session == nil || len(session.pending) == 0 {
 		return false
 	}
-	if !matchesStreamOutboundAck(session.pending.PacketType, packetType) {
-		return false
+	for idx := range session.pending {
+		pending := session.pending[idx]
+		if !matchesStreamOutboundAck(pending.Packet.PacketType, packetType) {
+			continue
+		}
+		if pending.Packet.StreamID != streamID || pending.Packet.SequenceNum != sequenceNum {
+			continue
+		}
+		copy(session.pending[idx:], session.pending[idx+1:])
+		lastIdx := len(session.pending) - 1
+		session.pending[lastIdx] = outboundPendingPacket{}
+		session.pending = session.pending[:lastIdx]
+		if len(session.pending) == 0 && len(session.queue) == 0 {
+			delete(s.sessions, sessionID)
+		}
+		return true
 	}
-	if session.pending.StreamID != streamID || session.pending.SequenceNum != sequenceNum {
-		return false
-	}
-
-	session.pending = nil
-	if len(session.queue) == 0 {
-		delete(s.sessions, sessionID)
-	}
-	return true
+	return false
 }
 
 func (s *streamOutboundStore) ClearStream(sessionID uint8, streamID uint16) {
@@ -112,8 +148,17 @@ func (s *streamOutboundStore) ClearStream(sessionID uint8, streamID uint16) {
 	if session == nil {
 		return
 	}
-	if session.pending != nil && session.pending.StreamID == streamID {
-		session.pending = nil
+	if len(session.pending) != 0 {
+		filteredPending := session.pending[:0]
+		for _, pending := range session.pending {
+			if pending.Packet.StreamID != streamID {
+				filteredPending = append(filteredPending, pending)
+			}
+		}
+		for idx := len(filteredPending); idx < len(session.pending); idx++ {
+			session.pending[idx] = outboundPendingPacket{}
+		}
+		session.pending = filteredPending
 	}
 	if len(session.queue) != 0 {
 		filtered := session.queue[:0]
@@ -124,7 +169,7 @@ func (s *streamOutboundStore) ClearStream(sessionID uint8, streamID uint16) {
 		}
 		session.queue = filtered
 	}
-	if session.pending == nil && len(session.queue) == 0 {
+	if len(session.pending) == 0 && len(session.queue) == 0 {
 		delete(s.sessions, sessionID)
 	}
 }
@@ -149,4 +194,9 @@ func matchesStreamOutboundAck(pendingType uint8, ackType uint8) bool {
 	default:
 		return false
 	}
+}
+
+func cloneOutboundPacket(packet VpnProto.Packet) VpnProto.Packet {
+	packet.Payload = append([]byte(nil), packet.Payload...)
+	return packet
 }

@@ -314,6 +314,12 @@ func (r *stream0Runtime) processDequeue(packet arq.QueuedPacket) {
 	case Enums.PACKET_DNS_QUERY_RES:
 		r.completePending(response.SequenceNum, response, nil)
 		r.noteServerDataActivity()
+	case Enums.PACKET_STREAM_DATA_ACK, Enums.PACKET_STREAM_FIN_ACK, Enums.PACKET_STREAM_RST_ACK:
+		r.noteServerDataActivity()
+		if stream, ok := r.client.getStream(response.StreamID); ok {
+			ackClientStreamTX(stream, response.SequenceNum)
+			notifyStreamWake(stream)
+		}
 	case Enums.PACKET_PONG:
 		r.noteServerDataActivity()
 	case Enums.PACKET_STREAM_DATA, Enums.PACKET_STREAM_FIN, Enums.PACKET_STREAM_RST:

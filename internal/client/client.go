@@ -83,7 +83,7 @@ type clientStream struct {
 	RemoteFinSeq   uint16
 	RemoteFinSet   bool
 	TXQueue        []clientStreamTXPacket
-	TXPending      *clientStreamTXPacket
+	TXInFlight     []clientStreamTXPacket
 	TXWake         chan struct{}
 	StopCh         chan struct{}
 	stopOnce       sync.Once
