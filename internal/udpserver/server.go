@@ -415,7 +415,10 @@ func (s *Server) validatePostSessionPacket(questionPacket []byte, requestName st
 		return postSessionValidation{}
 	}
 
-	s.logInvalidSessionThreshold(vpnPacket.SessionID, vpnPacket.SessionCookie, validation.Lookup, validation.Known)
+	if s.debugLoggingEnabled() {
+		s.logInvalidSessionThreshold(vpnPacket.SessionID, vpnPacket.SessionCookie, validation.Lookup, validation.Known)
+	}
+
 	if !validation.Known {
 		return postSessionValidation{}
 	}
@@ -427,8 +430,8 @@ func (s *Server) validatePostSessionPacket(questionPacket []byte, requestName st
 
 func (s *Server) logInvalidSessionThreshold(sessionID uint8, receivedCookie uint8, lookup sessionLookupResult, known bool) {
 	if !known {
-		s.log.Warnf(
-			"🧷 <yellow>Unknown Session Cookie Threshold Reached</yellow> <magenta>|</magenta> <blue>Session</blue>: <cyan>%d</cyan> <magenta>|</magenta> <blue>Received</blue>: <cyan>%d</cyan>",
+		s.log.Debugf(
+			"🧷 <yellow>Unknown Session Cookie Threshold Reached, Session: <cyan>%d</cyan>, Received: <cyan>%d</cyan></yellow>",
 			sessionID,
 			receivedCookie,
 		)
@@ -436,8 +439,8 @@ func (s *Server) logInvalidSessionThreshold(sessionID uint8, receivedCookie uint
 	}
 
 	if lookup.State == sessionLookupClosed {
-		s.log.Warnf(
-			"🧷 <yellow>Stale Closed Session Cookie Threshold Reached</yellow> <magenta>|</magenta> <blue>Session</blue>: <cyan>%d</cyan> <magenta>|</magenta> <blue>Expected</blue>: <cyan>%d</cyan> <magenta>|</magenta> <blue>Received</blue>: <cyan>%d</cyan>",
+		s.log.Debugf(
+			"🧷 <yellow>Stale Closed Session Cookie Threshold Reached, Session: <cyan>%d</cyan>, Expected: <cyan>%d</cyan>, Received: <cyan>%d</cyan></yellow>",
 			sessionID,
 			lookup.Cookie,
 			receivedCookie,
@@ -445,12 +448,16 @@ func (s *Server) logInvalidSessionThreshold(sessionID uint8, receivedCookie uint
 		return
 	}
 
-	s.log.Warnf(
-		"🧷 <yellow>Invalid Session Cookie Threshold Reached</yellow> <magenta>|</magenta> <blue>Session</blue>: <cyan>%d</cyan> <magenta>|</magenta> <blue>Expected</blue>: <cyan>%d</cyan> <magenta>|</magenta> <blue>Received</blue>: <cyan>%d</cyan>",
+	s.log.Debugf(
+		"🧷 <yellow>Invalid Session Cookie Threshold Reached, Session: <cyan>%d</cyan>, Expected: <cyan>%d</cyan>, Received: <cyan>%d</cyan></yellow>",
 		sessionID,
 		lookup.Cookie,
 		receivedCookie,
 	)
+}
+
+func (s *Server) debugLoggingEnabled() bool {
+	return s != nil && s.log != nil && s.log.Enabled(logger.LevelDebug)
 }
 
 func buildNoDataResponse(packet []byte) []byte {

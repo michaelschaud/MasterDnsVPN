@@ -31,6 +31,13 @@ const (
 	levelError
 )
 
+const (
+	LevelDebug = levelDebug
+	LevelInfo  = levelInfo
+	LevelWarn  = levelWarn
+	LevelError = levelError
+)
+
 var colorTagCodes = map[string]string{
 	"black":   "\x1b[30m",
 	"red":     "\x1b[31m",
@@ -113,6 +120,10 @@ func (l *Logger) Debugf(format string, args ...any) { l.logf(levelDebug, format,
 func (l *Logger) Infof(format string, args ...any)  { l.logf(levelInfo, format, args...) }
 func (l *Logger) Warnf(format string, args ...any)  { l.logf(levelWarn, format, args...) }
 func (l *Logger) Errorf(format string, args ...any) { l.logf(levelError, format, args...) }
+
+func (l *Logger) Enabled(level int) bool {
+	return l != nil && level >= l.level
+}
 
 func shouldUseColor() bool {
 	if strings.TrimSpace(os.Getenv("NO_COLOR")) != "" {
