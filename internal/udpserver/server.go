@@ -40,6 +40,8 @@ const (
 	sessionAcceptSize  = 7
 )
 
+var preSessionPacketTypes = buildPreSessionPacketTypes()
+
 type Server struct {
 	cfg                      config.ServerConfig
 	log                      *logger.Logger
@@ -78,6 +80,7 @@ type request struct {
 }
 
 func New(cfg config.ServerConfig, log *logger.Logger, codec *security.Codec) *Server {
+	invalidCookieWindow := cfg.InvalidCookieWindow()
 	return &Server{
 		cfg:                  cfg,
 		log:                  log,
@@ -106,8 +109,8 @@ func New(cfg config.ServerConfig, log *logger.Logger, codec *security.Codec) *Se
 		uploadCompressionMask:    buildCompressionMask(cfg.SupportedUploadCompressionTypes),
 		downloadCompressionMask:  buildCompressionMask(cfg.SupportedDownloadCompressionTypes),
 		dropLogIntervalNanos:     cfg.DropLogInterval().Nanoseconds(),
-		invalidCookieWindow:      cfg.InvalidCookieWindow(),
-		invalidCookieWindowNanos: cfg.InvalidCookieWindow().Nanoseconds(),
+		invalidCookieWindow:      invalidCookieWindow,
+		invalidCookieWindowNanos: invalidCookieWindow.Nanoseconds(),
 		invalidCookieThreshold:   cfg.InvalidCookieErrorThreshold,
 		socksConnectTimeout:      cfg.SOCKSConnectTimeout(),
 		streamOutboundTTL:        cfg.StreamOutboundTTL(),
@@ -441,7 +444,9 @@ func buildNoDataResponseLite(packet []byte, parsed DnsParser.LitePacket) []byte 
 
 func (s *Server) buildInvalidSessionErrorResponse(questionPacket []byte, requestName string, sessionID uint8, responseMode uint8) []byte {
 	payload := make([]byte, 8)
-	copy(payload, []byte{'I', 'N', 'V'})
+	payload[0] = 'I'
+	payload[1] = 'N'
+	payload[2] = 'V'
 	if _, err := rand.Read(payload[3:]); err != nil {
 		return nil
 	}
@@ -471,12 +476,15 @@ func (s *Server) buildSessionVPNResponse(questionPacket []byte, requestName stri
 }
 
 func isPreSessionRequestType(packetType uint8) bool {
-	switch packetType {
-	case Enums.PACKET_SESSION_INIT, Enums.PACKET_MTU_UP_REQ, Enums.PACKET_MTU_DOWN_REQ:
-		return true
-	default:
-		return false
-	}
+	return preSessionPacketTypes[packetType]
+}
+
+func buildPreSessionPacketTypes() [256]bool {
+	var values [256]bool
+	values[Enums.PACKET_SESSION_INIT] = true
+	values[Enums.PACKET_MTU_UP_REQ] = true
+	values[Enums.PACKET_MTU_DOWN_REQ] = true
+	return values
 }
 
 func (s *Server) handleSessionInitRequest(questionPacket []byte, decision domainMatcher.Decision, vpnPacket VpnProto.Packet) []byte {

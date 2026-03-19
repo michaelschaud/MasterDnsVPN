@@ -180,10 +180,10 @@ func parseFrom(data []byte, start int) (Packet, error) {
 }
 
 func computeHeaderCheckByte(header []byte) byte {
-	acc := byte((len(header)*17 + 0x5D) & 0xFF)
+	acc := byte(len(header)*17 + 0x5D)
 	for idx, value := range header {
-		acc = byte((int(acc) + int(value) + idx) & 0xFF)
-		acc ^= byte((int(value) << (idx & 0x03)) & 0xFF)
+		acc += value + byte(idx)
+		acc ^= value << (idx & 0x03)
 	}
 	return acc
 }
