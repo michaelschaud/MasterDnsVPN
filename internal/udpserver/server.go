@@ -62,6 +62,7 @@ type Server struct {
 	dnsUpstreamServers       []string
 	dnsUpstreamBufferPool    sync.Pool
 	dnsFragments             *fragmentstore.Store[dnsFragmentKey]
+	socks5Fragments          *fragmentstore.Store[socks5FragmentKey]
 	dnsFragmentTimeout       time.Duration
 	resolveDNSQueryFn        func([]byte) ([]byte, error)
 	dialStreamUpstreamFn     func(string, string, time.Duration) (net.Conn, error)
@@ -139,6 +140,7 @@ func New(cfg config.ServerConfig, log *logger.Logger, codec *security.Codec) *Se
 		dnsResolveInflight: newDNSResolveInflightManager(dnsFragmentTimeout),
 		dnsUpstreamServers: append([]string(nil), cfg.DNSUpstreamServers...),
 		dnsFragments:       fragmentstore.New[dnsFragmentKey](32),
+		socks5Fragments:    fragmentstore.New[socks5FragmentKey](32),
 		dnsFragmentTimeout: dnsFragmentTimeout,
 		dnsUpstreamBufferPool: sync.Pool{
 			New: func() any {
@@ -283,6 +285,7 @@ func (s *Server) sessionCleanupLoop(ctx context.Context) {
 			expired := s.sessions.Cleanup(now, sessionTimeout, closedRetention)
 			s.invalidCookieTracker.Cleanup(now, invalidCookieWindow)
 			s.purgeDNSQueryFragments(now)
+			s.purgeSOCKS5SynFragments(now)
 			if len(expired) == 0 {
 				continue
 			}
@@ -706,6 +709,7 @@ func (s *Server) cleanupClosedSession(sessionID uint8) {
 	s.streamOutbound.RemoveSession(sessionID)
 	s.deferredSession.RemoveSession(sessionID)
 	s.removeDNSQueryFragmentsForSession(sessionID)
+	s.removeSOCKS5SynFragmentsForSession(sessionID)
 }
 
 func (s *Server) serveQueuedOrPong(questionPacket []byte, requestName string, sessionRecord *sessionRuntimeView, now time.Time) []byte {
@@ -1161,8 +1165,41 @@ func (s *Server) processDeferredSOCKS5Syn(vpnPacket VpnProto.Packet, sessionReco
 		return
 	}
 	now := time.Now()
+	totalFragments := vpnPacket.TotalFragments
+	if totalFragments == 0 {
+		totalFragments = 1
+	}
+	assembledTarget, ready, completed := s.collectSOCKS5SynFragments(
+		vpnPacket.SessionID,
+		vpnPacket.StreamID,
+		vpnPacket.SequenceNum,
+		vpnPacket.Payload,
+		vpnPacket.FragmentID,
+		totalFragments,
+		now,
+	)
+	if completed {
+		_ = s.queueSessionPacket(vpnPacket.SessionID, VpnProto.Packet{
+			PacketType:     Enums.PACKET_SOCKS5_SYN_ACK,
+			StreamID:       vpnPacket.StreamID,
+			SequenceNum:    vpnPacket.SequenceNum,
+			FragmentID:     vpnPacket.FragmentID,
+			TotalFragments: totalFragments,
+		})
+		return
+	}
+	if !ready {
+		_ = s.queueSessionPacket(vpnPacket.SessionID, VpnProto.Packet{
+			PacketType:     Enums.PACKET_SOCKS5_SYN_ACK,
+			StreamID:       vpnPacket.StreamID,
+			SequenceNum:    vpnPacket.SequenceNum,
+			FragmentID:     vpnPacket.FragmentID,
+			TotalFragments: totalFragments,
+		})
+		return
+	}
 
-	target, err := SocksProto.ParseTargetPayload(vpnPacket.Payload)
+	target, err := SocksProto.ParseTargetPayload(assembledTarget)
 	if err != nil {
 		packetType := uint8(Enums.PACKET_SOCKS5_CONNECT_FAIL)
 		if errors.Is(err, SocksProto.ErrUnsupportedAddressType) || errors.Is(err, SocksProto.ErrInvalidDomainLength) {
@@ -1202,7 +1239,7 @@ func (s *Server) processDeferredSOCKS5Syn(vpnPacket VpnProto.Packet, sessionReco
 		return
 	}
 
-	upstreamConn, err := s.dialSOCKSStreamTarget(target.Host, target.Port, vpnPacket.Payload)
+	upstreamConn, err := s.dialSOCKSStreamTarget(target.Host, target.Port, assembledTarget)
 	if err != nil {
 		packetType := s.mapSOCKSConnectError(err)
 		if s.log != nil {

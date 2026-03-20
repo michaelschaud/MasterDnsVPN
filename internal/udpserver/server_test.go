@@ -1197,6 +1197,85 @@ func TestHandlePacketRespondsToSocks5Syn(t *testing.T) {
 	_ = streamRecord.UpstreamConn.Close()
 }
 
+func TestHandlePacketAssemblesFragmentedSocks5Syn(t *testing.T) {
+	codec, err := security.NewCodec(0, "")
+	if err != nil {
+		t.Fatalf("NewCodec returned error: %v", err)
+	}
+
+	srv := New(config.ServerConfig{
+		MaxPacketSize:     65535,
+		Domain:            []string{"a.com"},
+		MinVPNLabelLength: 3,
+	}, nil, codec)
+
+	dialCount := 0
+	upstreamConn, peerConn := net.Pipe()
+	defer upstreamConn.Close()
+	defer peerConn.Close()
+	go func() {
+		buffer := make([]byte, 16)
+		_, _ = peerConn.Read(buffer)
+	}()
+	srv.dialStreamUpstreamFn = func(network string, address string, timeout time.Duration) (net.Conn, error) {
+		dialCount++
+		return upstreamConn, nil
+	}
+
+	initPayload := []byte{0, 0x00, 0x00, 0x96, 0x00, 0xC8, 0x10, 0x20, 0x30, 0x40}
+	initResponse := srv.handlePacket(buildTunnelQueryWithSessionID(t, codec, "a.com", 0, Enums.PACKET_SESSION_INIT, initPayload))
+	packet, err := DnsParser.ExtractVPNResponse(initResponse, false)
+	if err != nil {
+		t.Fatalf("ExtractVPNResponse returned error: %v", err)
+	}
+	sessionID := packet.Payload[0]
+	sessionCookie := packet.Payload[1]
+
+	_ = srv.handlePacket(buildTunnelStreamQuery(t, codec, "a.com", sessionID, sessionCookie, Enums.PACKET_STREAM_SYN, 33, 1, nil))
+
+	targetPayload := []byte{0x03, 0x0E, 'e', 'x', 'a', 'm', 'p', 'l', 'e', '.', 'c', 'o', 'm', '.', 'x', 'x', 0x00, 0x50}
+	fragment0 := targetPayload[:8]
+	fragment1 := targetPayload[8:]
+
+	firstQuery := buildTunnelStreamQueryFragment(t, codec, "a.com", sessionID, sessionCookie, Enums.PACKET_SOCKS5_SYN, 33, 2, 0, 2, fragment0)
+	firstResponse := srv.handlePacket(firstQuery)
+	firstAck, err := DnsParser.ExtractVPNResponse(firstResponse, false)
+	if err != nil {
+		t.Fatalf("ExtractVPNResponse returned error: %v", err)
+	}
+	if firstAck.PacketType != Enums.PACKET_SOCKS5_SYN_ACK {
+		t.Fatalf("unexpected first packet type: got=%d want=%d", firstAck.PacketType, Enums.PACKET_SOCKS5_SYN_ACK)
+	}
+	if dialCount != 0 {
+		t.Fatalf("dial should not run before final fragment, got=%d", dialCount)
+	}
+
+	secondQuery := buildTunnelStreamQueryFragment(t, codec, "a.com", sessionID, sessionCookie, Enums.PACKET_SOCKS5_SYN, 33, 2, 1, 2, fragment1)
+	secondResponse := srv.handlePacket(secondQuery)
+	secondAck, err := DnsParser.ExtractVPNResponse(secondResponse, false)
+	if err != nil {
+		t.Fatalf("ExtractVPNResponse returned error: %v", err)
+	}
+	if secondAck.PacketType != Enums.PACKET_SOCKS5_SYN_ACK {
+		t.Fatalf("unexpected final packet type: got=%d want=%d", secondAck.PacketType, Enums.PACKET_SOCKS5_SYN_ACK)
+	}
+	if dialCount != 1 {
+		t.Fatalf("expected single dial after final fragment, got=%d", dialCount)
+	}
+
+	duplicateResponse := srv.handlePacket(secondQuery)
+	duplicateAck, err := DnsParser.ExtractVPNResponse(duplicateResponse, false)
+	if err != nil {
+		t.Fatalf("ExtractVPNResponse returned error: %v", err)
+	}
+	if duplicateAck.PacketType != Enums.PACKET_SOCKS5_SYN_ACK {
+		t.Fatalf("unexpected duplicate packet type: got=%d want=%d", duplicateAck.PacketType, Enums.PACKET_SOCKS5_SYN_ACK)
+	}
+	if dialCount != 1 {
+		t.Fatalf("duplicate final fragment must not redial, got=%d", dialCount)
+	}
+}
+
 func TestHandlePacketRejectsInvalidSocks5Syn(t *testing.T) {
 	codec, err := security.NewCodec(0, "")
 	if err != nil {
@@ -1956,14 +2035,20 @@ func buildTunnelDNSQuery(t *testing.T, codec *security.Codec, name string, sessi
 func buildTunnelStreamQuery(t *testing.T, codec *security.Codec, name string, sessionID uint8, sessionCookie uint8, packetType uint8, streamID uint16, sequenceNum uint16, payload []byte) []byte {
 	t.Helper()
 
+	return buildTunnelStreamQueryFragment(t, codec, name, sessionID, sessionCookie, packetType, streamID, sequenceNum, 0, 1, payload)
+}
+
+func buildTunnelStreamQueryFragment(t *testing.T, codec *security.Codec, name string, sessionID uint8, sessionCookie uint8, packetType uint8, streamID uint16, sequenceNum uint16, fragmentID uint8, totalFragments uint8, payload []byte) []byte {
+	t.Helper()
+
 	encoded, err := VpnProto.BuildEncodedAuto(VpnProto.BuildOptions{
 		SessionID:       sessionID,
 		PacketType:      packetType,
 		SessionCookie:   sessionCookie,
 		StreamID:        streamID,
 		SequenceNum:     sequenceNum,
-		FragmentID:      0,
-		TotalFragments:  1,
+		FragmentID:      fragmentID,
+		TotalFragments:  totalFragments,
 		CompressionType: 0,
 		Payload:         payload,
 	}, codec, 100)
