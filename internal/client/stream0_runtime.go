@@ -131,7 +131,7 @@ func (r *stream0Runtime) NotifyDNSActivity() {
 }
 
 func (r *stream0Runtime) QueueMainPacket(packet arq.QueuedPacket) bool {
-	if r == nil || !r.IsRunning() {
+	if r == nil || !r.IsRunning() || r.client == nil || !r.client.SessionReady() {
 		return false
 	}
 	if packet.Priority == 0 {
@@ -205,7 +205,7 @@ func (r *stream0Runtime) QueueDNSRequest(payload []byte) error {
 }
 
 func (r *stream0Runtime) QueuePing() bool {
-	if r == nil || !r.IsRunning() {
+	if r == nil || !r.IsRunning() || r.client == nil || !r.client.SessionReady() {
 		return false
 	}
 	if r.scheduler.PendingPings() > 0 {
@@ -229,7 +229,7 @@ func (r *stream0Runtime) QueuePing() bool {
 }
 
 func (r *stream0Runtime) QueueStreamPacket(streamID uint16, packetType uint8, sequenceNum uint16, payload []byte) bool {
-	if r == nil || !r.IsRunning() || streamID == 0 {
+	if r == nil || !r.IsRunning() || streamID == 0 || r.client == nil || !r.client.SessionReady() {
 		return false
 	}
 	if !r.scheduler.Enqueue(arq.QueueTargetStream, arq.QueuedPacket{

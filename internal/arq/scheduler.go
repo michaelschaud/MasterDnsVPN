@@ -363,6 +363,9 @@ func (s *Scheduler) clearOwner(owner *queueOwner) int {
 		if !ok || item == nil {
 			break
 		}
+		if item.packet.Payload != nil {
+			FreePayload(item.packet.Payload)
+		}
 		removed++
 	}
 	return removed
@@ -385,6 +388,9 @@ func (s *Scheduler) pruneOwner(owner *queueOwner, keep func(QueuedPacket) bool) 
 		}
 		if keep != nil && keep(item.packet) {
 			if !owner.track(item.packet) {
+				if item.packet.Payload != nil {
+					FreePayload(item.packet.Payload)
+				}
 				removed++
 				s.totalQueued--
 				if item.packet.PacketType == Enums.PACKET_PING {
@@ -394,6 +400,9 @@ func (s *Scheduler) pruneOwner(owner *queueOwner, keep func(QueuedPacket) bool) 
 			}
 			heap.Push(&owner.queue, item)
 			continue
+		}
+		if item.packet.Payload != nil {
+			FreePayload(item.packet.Payload)
 		}
 		removed++
 		s.totalQueued--

@@ -29,6 +29,12 @@ func (c *Client) sendScheduledPacket(packet arq.QueuedPacket) (VpnProto.Packet, 
 	}
 
 	timeout := normalizeTimeout(time.Duration(c.cfg.LocalDNSPendingTimeoutSec*float64(time.Second)), defaultRuntimeTimeout)
+
+	// Session Guard: Do not send session-indexed packets if session is not ready
+	if !c.SessionReady() {
+		return VpnProto.Packet{}, ErrTunnelDNSDispatchFailed
+	}
+
 	switch packet.PacketType {
 	case Enums.PACKET_DNS_QUERY_REQ, Enums.PACKET_DNS_QUERY_RES_ACK:
 		return c.sendMainQueuedPacket(packet, nil, timeout)
