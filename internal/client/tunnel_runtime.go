@@ -48,6 +48,152 @@ func (c *Client) sendScheduledPacket(packet arq.QueuedPacket) (VpnProto.Packet, 
 	}
 }
 
+func (c *Client) sendQueuedRuntimePacket(packet arq.QueuedPacket) error {
+	if c == nil || !c.SessionReady() {
+		return ErrTunnelDNSDispatchFailed
+	}
+
+	var (
+		connections []Connection
+		err         error
+	)
+	if packet.StreamID == 0 {
+		connections, err = c.selectTargetConnectionsForPacket(packet.PacketType, 0)
+	} else {
+		connections, err = c.selectTargetConnectionsForPacket(packet.PacketType, packet.StreamID)
+	}
+	if err != nil {
+		return err
+	}
+
+	deadline := time.Now().Add(defaultRuntimeTimeout)
+	return sendRuntimeQueuedPacketParallel(connections, ErrTunnelDNSDispatchFailed, func(connection Connection) error {
+		return c.sendQueuedRuntimePacketWithConnection(connection, packet, deadline)
+	})
+}
+
+func sendRuntimeQueuedPacketParallel(connections []Connection, fallbackErr error, fn func(Connection) error) error {
+	switch len(connections) {
+	case 0:
+		return fallbackErr
+	case 1:
+		return fn(connections[0])
+	}
+
+	lastErr := fallbackErr
+	successCount := 0
+	for _, connection := range connections {
+		if err := fn(connection); err != nil {
+			lastErr = err
+			continue
+		}
+		successCount++
+	}
+	if successCount > 0 {
+		return nil
+	}
+	return lastErr
+}
+
+func (c *Client) sendQueuedRuntimePacketWithConnection(connection Connection, packet arq.QueuedPacket, deadline time.Time) error {
+	if c == nil {
+		return ErrTunnelDNSDispatchFailed
+	}
+	if packet.StreamID == 0 {
+		return c.sendQueuedMainPacketOneWay(connection, packet, deadline)
+	}
+	return c.sendQueuedStreamPacketOneWay(connection, packet, deadline)
+}
+
+func (c *Client) sendQueuedMainPacketOneWay(connection Connection, packet arq.QueuedPacket, deadline time.Time) error {
+	var (
+		query []byte
+		err   error
+	)
+	switch packet.PacketType {
+	case Enums.PACKET_PING:
+		query, err = c.buildSessionControlQuery(connection.Domain, packet.PacketType, packet.Payload)
+	default:
+		query, err = c.buildTunnelTXTQuery(connection.Domain, VpnProto.BuildOptions{
+			SessionID:       c.sessionID,
+			PacketType:      packet.PacketType,
+			SessionCookie:   c.sessionCookie,
+			StreamID:        0,
+			SequenceNum:     packet.SequenceNum,
+			FragmentID:      packet.FragmentID,
+			TotalFragments:  normalizeMainTotalFragments(packet.TotalFragments),
+			CompressionType: packet.CompressionType,
+			Payload:         packet.Payload,
+		})
+	}
+	if err != nil {
+		return err
+	}
+	return c.sendRuntimeQuery(connection, query, deadline)
+}
+
+func (c *Client) sendQueuedStreamPacketOneWay(connection Connection, packet arq.QueuedPacket, deadline time.Time) error {
+	fragments, err := c.fragmentMainStreamPayload(connection.Domain, packet.PacketType, packet.Payload)
+	if err != nil {
+		return err
+	}
+	totalFragments := uint8(len(fragments))
+	if totalFragments == 0 {
+		totalFragments = 1
+	}
+	for fragmentID, fragmentPayload := range fragments {
+		query, buildErr := c.buildStreamQuery(
+			connection.Domain,
+			packet.PacketType,
+			packet.StreamID,
+			packet.SequenceNum,
+			uint8(fragmentID),
+			totalFragments,
+			fragmentPayload,
+		)
+		if buildErr != nil {
+			return buildErr
+		}
+		if err := c.sendRuntimeQuery(connection, query, deadline); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+func (c *Client) sendRuntimeQuery(connection Connection, query []byte, deadline time.Time) error {
+	if c == nil {
+		return ErrTunnelDNSDispatchFailed
+	}
+	c.noteResolverSend(connection.Key)
+	if c.exchangeQueryFn != nil {
+		timeout := time.Until(deadline)
+		if timeout <= 0 {
+			timeout = defaultRuntimeTimeout
+		}
+		response, err := c.exchangeQueryFn(connection, query, timeout)
+		if err != nil {
+			return err
+		}
+		if len(response) == 0 {
+			return nil
+		}
+		packet, err := c.parseValidatedServerPacket(response, ErrTunnelDNSDispatchFailed)
+		if err != nil {
+			return err
+		}
+		return c.handleAsyncServerPacket(packet, timeout)
+	}
+	if c != nil && c.sendOneWayPacketFn != nil {
+		if err := c.sendOneWayPacketFn(connection, query, deadline); err != nil {
+			return err
+		}
+		return nil
+	}
+	c.sendFastOneWayUDP(connection.ResolverLabel, query, deadline)
+	return nil
+}
+
 func (c *Client) sendStreamPacket(packet arq.QueuedPacket, connections []Connection, timeout time.Duration) (VpnProto.Packet, error) {
 	if c == nil {
 		return VpnProto.Packet{}, ErrStreamHandshakeFailed
@@ -220,7 +366,7 @@ func (c *Client) exchangeDNSOverConnection(connection Connection, packet []byte,
 	if len(packetResponse.Payload) != 0 {
 		packetResponse.Payload = append([]byte(nil), packetResponse.Payload...)
 	}
-	c.udpBufferPool.Put(response)
+	c.putRuntimeUDPBuffer(response)
 	return packetResponse, err
 }
 
@@ -268,7 +414,7 @@ func (c *Client) exchangeUDPQueryWithConn(conn *net.UDPConn, packet []byte, time
 	expectedID := packet[:2]
 
 	// Drain any stale packets from the buffer (non-blocking)
-	drainBuffer := c.udpBufferPool.Get().([]byte)
+	drainBuffer := c.getRuntimeUDPBuffer()
 	for {
 		if err := conn.SetReadDeadline(time.Now()); err != nil {
 			break
@@ -277,7 +423,7 @@ func (c *Client) exchangeUDPQueryWithConn(conn *net.UDPConn, packet []byte, time
 			break
 		}
 	}
-	c.udpBufferPool.Put(drainBuffer)
+	c.putRuntimeUDPBuffer(drainBuffer)
 
 	timeout = normalizeTimeout(timeout, time.Second)
 	deadline := time.Now().Add(timeout)
@@ -295,10 +441,10 @@ func (c *Client) exchangeUDPQueryWithConn(conn *net.UDPConn, packet []byte, time
 			return nil, os.ErrDeadlineExceeded
 		}
 
-		buffer := c.udpBufferPool.Get().([]byte)
+		buffer := c.getRuntimeUDPBuffer()
 		n, err := conn.Read(buffer)
 		if err != nil {
-			c.udpBufferPool.Put(buffer)
+			c.putRuntimeUDPBuffer(buffer)
 			return nil, err
 		}
 
@@ -306,7 +452,7 @@ func (c *Client) exchangeUDPQueryWithConn(conn *net.UDPConn, packet []byte, time
 			return buffer[:n], nil
 		}
 		// Stale packet or from another request, continue reading until timeout
-		c.udpBufferPool.Put(buffer)
+		c.putRuntimeUDPBuffer(buffer)
 	}
 }
 
@@ -420,6 +566,31 @@ type udpQueryTransport struct {
 	buffer []byte
 }
 
+func runtimeUDPReadBufferSize() int {
+	return 65535
+}
+
+func (c *Client) getRuntimeUDPBuffer() []byte {
+	if c == nil {
+		return make([]byte, runtimeUDPReadBufferSize())
+	}
+	buf, _ := c.udpBufferPool.Get().([]byte)
+	if cap(buf) < runtimeUDPReadBufferSize() {
+		return make([]byte, runtimeUDPReadBufferSize())
+	}
+	return buf[:runtimeUDPReadBufferSize()]
+}
+
+func (c *Client) putRuntimeUDPBuffer(buf []byte) {
+	if c == nil || buf == nil {
+		return
+	}
+	if cap(buf) < runtimeUDPReadBufferSize() {
+		return
+	}
+	c.udpBufferPool.Put(buf[:runtimeUDPReadBufferSize()])
+}
+
 func dialUDPResolver(resolverLabel string) (*net.UDPConn, error) {
 	addr, err := net.ResolveUDPAddr("udp", resolverLabel)
 	if err != nil {
@@ -435,16 +606,16 @@ func newUDPQueryTransport(resolverLabel string) (*udpQueryTransport, error) {
 	}
 	return &udpQueryTransport{
 		conn:   conn,
-		buffer: make([]byte, EDnsSafeUDPSize),
+		buffer: make([]byte, runtimeUDPReadBufferSize()),
 	}, nil
 }
 
 func (c *Client) sendFastOneWayUDP(resolverLabel string, packet []byte, deadline time.Time) {
-	conn, err := c.getUDPConn(resolverLabel)
+	conn, err := dialUDPResolver(resolverLabel)
 	if err != nil {
 		return
 	}
-	defer c.putUDPConn(resolverLabel, conn)
+	defer conn.Close()
 
 	_ = conn.SetWriteDeadline(deadline)
 	_, _ = conn.Write(packet)

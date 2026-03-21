@@ -1464,6 +1464,59 @@ func TestHandleInboundStreamPacketIgnoresDuplicateData(t *testing.T) {
 	c.deleteStream(stream.ID)
 }
 
+func TestHandleInboundStreamPacketIgnoresOlderOutOfOrderData(t *testing.T) {
+	c := New(config.ClientConfig{}, nil, nil)
+	serverConn, clientConn := net.Pipe()
+	defer serverConn.Close()
+	defer clientConn.Close()
+
+	stream := c.createStream(6, serverConn)
+	newer := VpnProto.Packet{
+		PacketType:  Enums.PACKET_STREAM_DATA,
+		StreamID:    6,
+		SequenceNum: 8,
+		Payload:     []byte("new"),
+	}
+	older := VpnProto.Packet{
+		PacketType:  Enums.PACKET_STREAM_DATA,
+		StreamID:    6,
+		SequenceNum: 7,
+		Payload:     []byte("old"),
+	}
+
+	writeDone := make(chan []byte, 2)
+	go func() {
+		buffer := make([]byte, 8)
+		n, _ := clientConn.Read(buffer)
+		writeDone <- append([]byte(nil), buffer[:n]...)
+		_ = clientConn.SetReadDeadline(time.Now().Add(200 * time.Millisecond))
+		n, err := clientConn.Read(buffer)
+		if err == nil {
+			writeDone <- append([]byte(nil), buffer[:n]...)
+			return
+		}
+		writeDone <- nil
+	}()
+
+	c.exchangeQueryFn = func(conn Connection, packet []byte, timeout time.Duration) ([]byte, error) {
+		return nil, ErrTunnelDNSDispatchFailed
+	}
+
+	_, _ = c.handleInboundStreamPacket(newer, time.Second)
+	_, _ = c.handleInboundStreamPacket(older, time.Second)
+
+	first := <-writeDone
+	second := <-writeDone
+	if string(first) != "new" {
+		t.Fatalf("unexpected first payload: %q", first)
+	}
+	if second != nil {
+		t.Fatalf("older out-of-order inbound data must not be written again: %q", second)
+	}
+
+	c.deleteStream(stream.ID)
+}
+
 func TestClientStreamTXLoopAdvancesQueueOnDataAck(t *testing.T) {
 	codec, err := security.NewCodec(0, "")
 	if err != nil {
@@ -1779,6 +1832,67 @@ func TestHandlePackedServerControlBlocksAcksQueuedStreamPackets(t *testing.T) {
 	}
 }
 
+func TestDispatchServerPacketDuplicateDataAckIsIdempotent(t *testing.T) {
+	c := New(config.ClientConfig{}, nil, nil)
+	localConn, remoteConn := net.Pipe()
+	defer localConn.Close()
+	defer remoteConn.Close()
+
+	stream := c.createStream(10, localConn)
+	stream.mu.Lock()
+	stream.TXInFlight = append(stream.TXInFlight, clientStreamTXPacket{
+		PacketType:  Enums.PACKET_STREAM_DATA,
+		SequenceNum: 11,
+		LastSentAt:  time.Now(),
+		RetryDelay:  streamTXInitialRetryDelay,
+		CreatedAt:   time.Now(),
+		Scheduled:   true,
+	})
+	stream.mu.Unlock()
+
+	packet := VpnProto.Packet{
+		PacketType:     Enums.PACKET_STREAM_DATA_ACK,
+		StreamID:       10,
+		HasStreamID:    true,
+		SequenceNum:    11,
+		HasSequenceNum: true,
+	}
+
+	if _, err := c.dispatchServerPacket(packet, time.Second, nil); err != nil {
+		t.Fatalf("first dispatchServerPacket returned error: %v", err)
+	}
+	if _, err := c.dispatchServerPacket(packet, time.Second, nil); err != nil {
+		t.Fatalf("second dispatchServerPacket returned error: %v", err)
+	}
+
+	stream.mu.Lock()
+	defer stream.mu.Unlock()
+	if len(stream.TXInFlight) != 0 {
+		t.Fatalf("duplicate ACK should leave inflight empty, got=%d", len(stream.TXInFlight))
+	}
+}
+
+func TestPackedStreamControlReplyCacheConsumesDuplicateReplyOnce(t *testing.T) {
+	c := New(config.ClientConfig{}, nil, nil)
+	payload := []byte{
+		Enums.PACKET_STREAM_SYN_ACK, 0x00, 0x21, 0x00, 0x01, 0x00, 0x00,
+		Enums.PACKET_STREAM_SYN_ACK, 0x00, 0x21, 0x00, 0x01, 0x00, 0x00,
+	}
+
+	c.cachePackedStreamControlReplies(payload)
+
+	packet, ok := c.takeExpectedStreamControlReply(Enums.PACKET_STREAM_SYN, 33, 1)
+	if !ok {
+		t.Fatal("expected cached stream control reply to be available")
+	}
+	if packet.PacketType != Enums.PACKET_STREAM_SYN_ACK || packet.StreamID != 33 || packet.SequenceNum != 1 {
+		t.Fatalf("unexpected cached packet: %+v", packet)
+	}
+	if _, ok := c.takeExpectedStreamControlReply(Enums.PACKET_STREAM_SYN, 33, 1); ok {
+		t.Fatal("duplicate cached control reply should only be consumable once")
+	}
+}
+
 func TestHandlePackedServerControlBlocksAcksDNSRequestFragment(t *testing.T) {
 	c := New(config.ClientConfig{}, nil, nil)
 	sequenceNum := uint16(14)
@@ -1812,6 +1926,79 @@ func TestHandlePackedServerControlBlocksAcksDNSRequestFragment(t *testing.T) {
 	defer c.stream0Runtime.mu.Unlock()
 	if _, ok := c.stream0Runtime.dnsRequests[sequenceNum]; ok {
 		t.Fatal("expected packed dns ack to clear queued dns request fragment")
+	}
+}
+
+func TestStream0RuntimeProcessDequeueTreatsPackedStreamAckAsResolved(t *testing.T) {
+	codec, err := security.NewCodec(0, "")
+	if err != nil {
+		t.Fatalf("NewCodec returned error: %v", err)
+	}
+	c := New(config.ClientConfig{}, nil, codec)
+	c.connections = []Connection{{
+		Domain:        "v.example.com",
+		Resolver:      "127.0.0.1",
+		ResolverPort:  5353,
+		ResolverLabel: "127.0.0.1:5353",
+		Key:           "127.0.0.1|5353|v.example.com",
+		IsValid:       true,
+	}}
+	c.connectionsByKey = map[string]int{c.connections[0].Key: 0}
+	c.rebuildBalancer()
+	c.sessionID = 7
+	c.sessionCookie = 9
+	c.sessionReady = true
+
+	serverConn, clientConn := net.Pipe()
+	defer serverConn.Close()
+	defer clientConn.Close()
+	stream := c.createStream(9, serverConn)
+	defer c.deleteStream(stream.ID)
+	stream.mu.Lock()
+	stream.TXInFlight = append(stream.TXInFlight, clientStreamTXPacket{
+		PacketType:  Enums.PACKET_STREAM_DATA,
+		SequenceNum: 7,
+		Payload:     arq.AllocPayload([]byte("abc")),
+		LastSentAt:  time.Now(),
+		RetryDelay:  streamTXInitialRetryDelay,
+		CreatedAt:   time.Now(),
+		Scheduled:   true,
+	})
+	stream.mu.Unlock()
+
+	c.exchangeQueryFn = func(conn Connection, packet []byte, timeout time.Duration) ([]byte, error) {
+		queryPacket, err := DnsParser.ParsePacketLite(packet)
+		if err != nil || !queryPacket.HasQuestion {
+			t.Fatalf("unexpected tunnel query: err=%v", err)
+		}
+		return DnsParser.BuildVPNResponsePacket(packet, queryPacket.FirstQuestion.Name, VpnProto.Packet{
+			SessionID:     c.sessionID,
+			SessionCookie: c.sessionCookie,
+			PacketType:    Enums.PACKET_PACKED_CONTROL_BLOCKS,
+			Payload: []byte{
+				Enums.PACKET_STREAM_DATA_ACK, 0x00, 0x09, 0x00, 0x07, 0x00, 0x00,
+			},
+		}, false)
+	}
+
+	ctx, cancel := context.WithCancel(context.Background())
+	if err := c.stream0Runtime.Start(ctx); err != nil {
+		t.Fatalf("Start returned error: %v", err)
+	}
+	defer cancel()
+
+	c.stream0Runtime.processDequeue(arq.QueuedPacket{
+		PacketType:  Enums.PACKET_STREAM_DATA,
+		StreamID:    9,
+		SequenceNum: 7,
+		Payload:     []byte("abc"),
+		Priority:    arq.DefaultPriorityForPacket(Enums.PACKET_STREAM_DATA),
+	})
+
+	stream.mu.Lock()
+	defer stream.mu.Unlock()
+	if len(stream.TXInFlight) != 0 {
+		t.Fatalf("expected packed stream ack to clear inflight packet, got=%d", len(stream.TXInFlight))
 	}
 }
 
@@ -2062,6 +2249,82 @@ func TestHandleClosedStreamPacketSendsOneWayResetForLateData(t *testing.T) {
 	}
 	if captured.PacketType != Enums.PACKET_STREAM_RST || captured.StreamID != 41 || captured.SequenceNum != 0 {
 		t.Fatalf("unexpected one-way reset packet: %+v", captured)
+	}
+}
+
+func TestHandleClosedStreamPacketConsumesLateControlReply(t *testing.T) {
+	c := New(config.ClientConfig{}, nil, nil)
+	stream := c.createStream(55, nil)
+	c.deleteStream(stream.ID)
+
+	response, handled, err := c.handleClosedStreamPacket(VpnProto.Packet{
+		PacketType:     Enums.PACKET_STREAM_SYN_ACK,
+		StreamID:       55,
+		HasStreamID:    true,
+		SequenceNum:    1,
+		HasSequenceNum: true,
+	}, time.Second)
+	if err != nil {
+		t.Fatalf("handleClosedStreamPacket returned error: %v", err)
+	}
+	if !handled {
+		t.Fatal("expected late control reply to be consumed for closed stream")
+	}
+	if response.PacketType != Enums.PACKET_STREAM_SYN_ACK || response.StreamID != 55 || response.SequenceNum != 1 {
+		t.Fatalf("unexpected synthetic response: %+v", response)
+	}
+}
+
+func TestAwaitExpectedStreamControlReplyResolvesThroughCentralHarvest(t *testing.T) {
+	codec, err := security.NewCodec(0, "")
+	if err != nil {
+		t.Fatalf("NewCodec returned error: %v", err)
+	}
+
+	c := New(config.ClientConfig{
+		Domains: []string{"v.example.com"},
+	}, nil, codec)
+	c.connections = []Connection{{
+		Domain:        "v.example.com",
+		Resolver:      "127.0.0.1",
+		ResolverPort:  5353,
+		ResolverLabel: "127.0.0.1:5353",
+		Key:           "127.0.0.1|5353|v.example.com",
+		IsValid:       true,
+	}}
+	c.connectionsByKey = map[string]int{c.connections[0].Key: 0}
+	c.rebuildBalancer()
+	c.sessionID = 7
+	c.sessionCookie = 9
+	c.sessionReady = true
+
+	c.exchangeQueryFn = func(conn Connection, packet []byte, timeout time.Duration) ([]byte, error) {
+		parsed, err := DnsParser.ParsePacketLite(packet)
+		if err != nil {
+			t.Fatalf("ParsePacketLite returned error: %v", err)
+		}
+		if !parsed.HasQuestion {
+			t.Fatal("expected dns question in harvest query")
+		}
+		return DnsParser.BuildVPNResponsePacket(packet, parsed.FirstQuestion.Name, VpnProto.Packet{
+			SessionID:     c.sessionID,
+			SessionCookie: c.sessionCookie,
+			PacketType:    Enums.PACKET_PACKED_CONTROL_BLOCKS,
+			Payload: []byte{
+				Enums.PACKET_STREAM_SYN_ACK, 0x00, 0x05, 0x00, 0x01, 0x00, 0x00,
+			},
+		}, false)
+	}
+
+	packet, ok, err := c.awaitExpectedStreamControlReply(Enums.PACKET_STREAM_SYN, 5, 1, time.Now().Add(time.Second))
+	if err != nil {
+		t.Fatalf("awaitExpectedStreamControlReply returned error: %v", err)
+	}
+	if !ok {
+		t.Fatal("expected stream control reply to be resolved through harvest")
+	}
+	if packet.PacketType != Enums.PACKET_STREAM_SYN_ACK || packet.StreamID != 5 || packet.SequenceNum != 1 {
+		t.Fatalf("unexpected harvested packet: %+v", packet)
 	}
 }
 

@@ -10,6 +10,7 @@ package client
 import (
 	"context"
 	"errors"
+	"fmt"
 	"io"
 	"net"
 	"strconv"
@@ -56,28 +57,82 @@ func (c *Client) handleLocalSOCKS5Conn(conn net.Conn) {
 	}, func() bool {
 		timeout := localHandshakeTimeout(time.Duration(c.cfg.LocalSOCKS5HandshakeSec*float64(time.Second)), 10*time.Second)
 		_ = conn.SetDeadline(time.Now().Add(timeout))
+		clientIP := peerAddrString(conn)
 
 		request, err := c.performSOCKS5Handshake(conn)
 		if err != nil {
+			if c.log != nil {
+				switch {
+				case errors.Is(err, errSOCKS5AuthFailed):
+					c.log.Warnf(
+						"🔒 <yellow>SOCKS5 Auth Failed, Client: <cyan>%s</cyan></yellow>",
+						clientIP,
+					)
+				default:
+					c.log.Debugf(
+						"🧦 <yellow>SOCKS5 Handshake Failed, Client: <cyan>%s</cyan> | Error: <cyan>%v</cyan></yellow>",
+						clientIP,
+						err,
+					)
+				}
+			}
 			if !errors.Is(err, errSOCKS5AuthFailed) {
 				_ = writeSOCKS5Failure(conn, 0x07)
 			}
 			return false
 		}
+		targetText := formatSOCKS5TargetPayload(request.TargetPayload)
 
 		switch request.Command {
 		case 0x01:
+			if c.log != nil {
+				c.log.Infof(
+					"🧦 <green>SOCKS5 CONNECT Requested, Client: <cyan>%s</cyan> | Target: <cyan>%s</cyan></green>",
+					clientIP,
+					targetText,
+				)
+			}
 			streamID, openErr := c.OpenSOCKS5Stream(request.TargetPayload, timeout)
 			if openErr != nil {
+				if c.log != nil {
+					c.log.Debugf(
+						"🧦 <yellow>SOCKS5 CONNECT Failed, Client: <cyan>%s</cyan> | Target: <cyan>%s</cyan> | Error: <cyan>%v</cyan></yellow>",
+						clientIP,
+						targetText,
+						openErr,
+					)
+				}
 				_ = writeSOCKS5Failure(conn, mapSOCKS5FailureReply(openErr))
 				return false
 			}
 			if _, writeErr := conn.Write([]byte{0x05, 0x00, 0x00, 0x01, 0, 0, 0, 0, 0, 0}); writeErr != nil {
+				if c.log != nil {
+					c.log.Debugf(
+						"🧦 <yellow>SOCKS5 Reply Write Failed, Stream: <cyan>%d</cyan> | Client: <cyan>%s</cyan> | Error: <cyan>%v</cyan></yellow>",
+						streamID,
+						clientIP,
+						writeErr,
+					)
+				}
 				return false
+			}
+			if c.log != nil {
+				c.log.Infof(
+					"🧦 <green>SOCKS5 Stream Ready, Stream ID: <cyan>%d</cyan> | Client: <cyan>%s</cyan> | Target: <cyan>%s</cyan></green>",
+					streamID,
+					clientIP,
+					targetText,
+				)
 			}
 			attachLocalStreamConn(c, streamID, conn, timeout)
 			return true
 		case 0x03:
+			if c.log != nil {
+				c.log.Debugf(
+					"🧦 <yellow>SOCKS5 UDP Associate Requested, Client: <cyan>%s</cyan></yellow>",
+					clientIP,
+				)
+			}
 			_ = conn.SetDeadline(time.Time{})
 			if err := c.runLocalSOCKS5UDPAssociate(conn); err != nil && c.log != nil {
 				c.log.Debugf(
@@ -234,6 +289,49 @@ func readSOCKS5TargetPayload(conn net.Conn, atyp byte) ([]byte, error) {
 	default:
 		return nil, SocksProto.ErrUnsupportedAddressType
 	}
+}
+
+func formatSOCKS5TargetPayload(payload []byte) string {
+	if len(payload) < 1 {
+		return "<invalid>"
+	}
+	switch payload[0] {
+	case 0x01:
+		if len(payload) != 1+4+2 {
+			return "<invalid-ipv4>"
+		}
+		host := net.IP(payload[1:5]).String()
+		port := int(payload[5])<<8 | int(payload[6])
+		return net.JoinHostPort(host, strconv.Itoa(port))
+	case 0x03:
+		if len(payload) < 1+1+2 {
+			return "<invalid-domain>"
+		}
+		dlen := int(payload[1])
+		if len(payload) != 1+1+dlen+2 {
+			return "<invalid-domain>"
+		}
+		host := string(payload[2 : 2+dlen])
+		portIdx := 2 + dlen
+		port := int(payload[portIdx])<<8 | int(payload[portIdx+1])
+		return net.JoinHostPort(host, strconv.Itoa(port))
+	case 0x04:
+		if len(payload) != 1+16+2 {
+			return "<invalid-ipv6>"
+		}
+		host := net.IP(payload[1:17]).String()
+		port := int(payload[17])<<8 | int(payload[18])
+		return net.JoinHostPort(host, strconv.Itoa(port))
+	default:
+		return fmt.Sprintf("<atyp:%d>", payload[0])
+	}
+}
+
+func peerAddrString(conn net.Conn) string {
+	if conn == nil || conn.RemoteAddr() == nil {
+		return "unknown"
+	}
+	return conn.RemoteAddr().String()
 }
 
 func writeSOCKS5Failure(conn net.Conn, rep byte) error {

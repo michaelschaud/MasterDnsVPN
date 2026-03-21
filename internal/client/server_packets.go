@@ -10,22 +10,13 @@ package client
 import (
 	"time"
 
+	"masterdnsvpn-go/internal/arq"
 	Enums "masterdnsvpn-go/internal/enums"
 	VpnProto "masterdnsvpn-go/internal/vpnproto"
 )
 
 func (c *Client) handleAsyncServerPacket(packet VpnProto.Packet, timeout time.Duration) error {
-	switch packet.PacketType {
-	case Enums.PACKET_DNS_QUERY_REQ_ACK:
-		if c != nil && c.stream0Runtime != nil {
-			c.stream0Runtime.ackDNSRequestFragment(packet)
-		}
-		return nil
-	case Enums.PACKET_DNS_QUERY_RES:
-		return c.handleInboundDNSResponseFragment(packet)
-	default:
-		return c.handleFollowUpServerPacket(packet, timeout)
-	}
+	return c.handleFollowUpServerPacket(packet, timeout)
 }
 
 func (c *Client) pollServerPacketWithConnection(connection Connection, timeout time.Duration) (VpnProto.Packet, error) {
@@ -63,5 +54,83 @@ func matchesExpectedStreamResponse(sentType uint8, streamID uint16, sequenceNum 
 		return packet.PacketType == Enums.PACKET_STREAM_RST_ACK
 	default:
 		return false
+	}
+}
+
+type serverPacketDispatchResult struct {
+	next        VpnProto.Packet
+	hasNext     bool
+	stop        bool
+	ackedQueued bool
+}
+
+func (c *Client) applyClientACKState(packet VpnProto.Packet) {
+	if c == nil {
+		return
+	}
+	switch packet.PacketType {
+	case Enums.PACKET_STREAM_DATA_ACK, Enums.PACKET_STREAM_FIN_ACK, Enums.PACKET_STREAM_RST_ACK:
+		c.noteStreamProgress(packet.StreamID)
+		if stream, ok := c.getStream(packet.StreamID); ok {
+			ackClientStreamTXWithLog(c, stream, packet.SequenceNum, time.Now())
+			notifyStreamWake(stream)
+		}
+	case Enums.PACKET_STREAM_SYN_ACK, Enums.PACKET_SOCKS5_SYN_ACK:
+		c.noteStreamProgress(packet.StreamID)
+	}
+	if isCacheableStreamControlReply(packet.PacketType) {
+		c.cacheStreamControlReply(packet)
+	}
+}
+
+func (c *Client) dispatchServerPacket(packet VpnProto.Packet, timeout time.Duration, sent *arq.QueuedPacket) (serverPacketDispatchResult, error) {
+	result := serverPacketDispatchResult{stop: true}
+	if c == nil {
+		return result, nil
+	}
+
+	if sent != nil && matchesQueuedPacketAck(*sent, packet.PacketType, packet.StreamID, packet.SequenceNum, packet.FragmentID, packet.TotalFragments) {
+		result.ackedQueued = true
+	}
+
+	switch packet.PacketType {
+	case 0, Enums.PACKET_PONG, Enums.PACKET_SESSION_BUSY:
+		return result, nil
+	case Enums.PACKET_ERROR_DROP:
+		return result, c.handleServerDropPacket(packet)
+	case Enums.PACKET_PACKED_CONTROL_BLOCKS:
+		acked, err := c.handlePackedServerControlBlocksForQueuedPacket(packet.Payload, timeout, sent)
+		result.ackedQueued = result.ackedQueued || acked
+		return result, err
+	case Enums.PACKET_DNS_QUERY_REQ_ACK:
+		if c.stream0Runtime != nil {
+			c.stream0Runtime.ackDNSRequestFragment(packet)
+		}
+		return result, nil
+	case Enums.PACKET_DNS_QUERY_RES:
+		return result, c.handleInboundDNSResponseFragment(packet)
+	case Enums.PACKET_STREAM_DATA_ACK, Enums.PACKET_STREAM_FIN_ACK, Enums.PACKET_STREAM_RST_ACK:
+		c.applyClientACKState(packet)
+		return result, nil
+	case Enums.PACKET_STREAM_SYN_ACK, Enums.PACKET_SOCKS5_SYN_ACK:
+		c.applyClientACKState(packet)
+		return result, nil
+	default:
+		if isSOCKS5ErrorPacket(packet.PacketType) {
+			c.applyClientACKState(packet)
+			return result, nil
+		}
+		if packet.PacketType == Enums.PACKET_STREAM_DATA || packet.PacketType == Enums.PACKET_STREAM_FIN || packet.PacketType == Enums.PACKET_STREAM_RST {
+			nextPacket, err := c.handleInboundStreamPacket(packet, timeout)
+			if err != nil {
+				return result, err
+			}
+			if nextPacket.PacketType != 0 {
+				result.next = nextPacket
+				result.hasNext = true
+				result.stop = false
+			}
+		}
+		return result, nil
 	}
 }

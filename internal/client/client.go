@@ -96,6 +96,8 @@ type Client struct {
 	runtimeDisabled                       map[string]resolverDisabledState
 	healthRuntimeRun                      bool
 	recheckConnectionFn                   func(*Connection) bool
+	streamControlReplyMu                  sync.Mutex
+	streamControlReplies                  map[streamControlReplyKey]cachedStreamControlReply
 
 	sessionResetSignal  chan struct{}
 	sessionResetPending atomic.Bool
@@ -168,6 +170,17 @@ type clientStreamTXPacket struct {
 	RetryAt     time.Time
 	RetryCount  int
 	Scheduled   bool
+}
+
+type streamControlReplyKey struct {
+	streamID    uint16
+	sequenceNum uint16
+	packetType  uint8
+}
+
+type cachedStreamControlReply struct {
+	packet   VpnProto.Packet
+	storedAt time.Time
 }
 
 func Bootstrap(configPath string) (*Client, error) {
@@ -244,11 +257,12 @@ func New(cfg config.ClientConfig, log *logger.Logger, codec *security.Codec) *Cl
 		resolverHealth:            make(map[string]*resolverHealthState, len(cfg.Domains)*len(cfg.Resolvers)),
 		resolverRecheck:           make(map[string]resolverRecheckState, len(cfg.Domains)*len(cfg.Resolvers)),
 		runtimeDisabled:           make(map[string]resolverDisabledState, len(cfg.Domains)*len(cfg.Resolvers)),
+		streamControlReplies:      make(map[streamControlReplyKey]cachedStreamControlReply, 16),
 		sessionResetSignal:        make(chan struct{}, 1),
 		resolverConns:             make(map[string]chan *net.UDPConn),
 		udpBufferPool: sync.Pool{
 			New: func() any {
-				return make([]byte, EDnsSafeUDPSize)
+				return make([]byte, runtimeUDPReadBufferSize())
 			},
 		},
 	}
@@ -386,6 +400,9 @@ func (c *Client) ResetRuntimeState(resetSessionCookie bool) {
 	c.healthRuntimeRun = false
 	c.resolverHealthMu.Unlock()
 	c.clearSessionInitBusyUntil()
+	c.streamControlReplyMu.Lock()
+	c.streamControlReplies = make(map[streamControlReplyKey]cachedStreamControlReply, 16)
+	c.streamControlReplyMu.Unlock()
 
 	c.resolverConnsMu.Lock()
 	for _, pool := range c.resolverConns {
@@ -403,6 +420,7 @@ func (c *Client) ResetRuntimeState(resetSessionCookie bool) {
 	}
 	c.resolverConns = make(map[string]chan *net.UDPConn)
 	c.resolverConnsMu.Unlock()
+
 }
 
 func (c *Client) updateMaxPackedBlocks() {
@@ -685,6 +703,22 @@ func (c *Client) handleClosedStreamPacket(packet VpnProto.Packet, timeout time.D
 		responsePacket.PacketType = outgoingType
 		responsePacket.SequenceNum = 0
 		responsePacket.HasSequenceNum = false
+	case Enums.PACKET_STREAM_FIN_ACK,
+		Enums.PACKET_STREAM_RST_ACK,
+		Enums.PACKET_STREAM_SYN_ACK,
+		Enums.PACKET_SOCKS5_SYN_ACK,
+		Enums.PACKET_SOCKS5_CONNECT_FAIL,
+		Enums.PACKET_SOCKS5_RULESET_DENIED,
+		Enums.PACKET_SOCKS5_NETWORK_UNREACHABLE,
+		Enums.PACKET_SOCKS5_HOST_UNREACHABLE,
+		Enums.PACKET_SOCKS5_CONNECTION_REFUSED,
+		Enums.PACKET_SOCKS5_TTL_EXPIRED,
+		Enums.PACKET_SOCKS5_COMMAND_UNSUPPORTED,
+		Enums.PACKET_SOCKS5_ADDRESS_TYPE_UNSUPPORTED,
+		Enums.PACKET_SOCKS5_AUTH_FAILED,
+		Enums.PACKET_SOCKS5_UPSTREAM_UNAVAILABLE:
+		responsePacket.PacketType = packet.PacketType
+		return responsePacket, true, nil
 	default:
 		return VpnProto.Packet{}, false, nil
 	}
@@ -766,6 +800,26 @@ func (c *Client) activeStreamCount() int {
 	c.streamsMu.RLock()
 	defer c.streamsMu.RUnlock()
 	return len(c.streams)
+}
+
+func (c *Client) hasActiveStreamTXWork() bool {
+	if c == nil {
+		return false
+	}
+	c.streamsMu.RLock()
+	defer c.streamsMu.RUnlock()
+	for _, stream := range c.streams {
+		if stream == nil {
+			continue
+		}
+		stream.mu.Lock()
+		hasWork := len(stream.TXQueue) != 0 || len(stream.TXInFlight) != 0
+		stream.mu.Unlock()
+		if hasWork {
+			return true
+		}
+	}
+	return false
 }
 
 func (c *Client) connectionPtrByKey(serverKey string) *Connection {

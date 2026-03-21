@@ -57,7 +57,9 @@ type stream0Runtime struct {
 	scheduler *arq.Scheduler
 
 	mu               sync.Mutex
+	schedulerMu      sync.Mutex
 	running          atomic.Bool
+	inFlight         atomic.Int32
 	ctx              context.Context
 	cancel           context.CancelFunc
 	wg               sync.WaitGroup
@@ -101,7 +103,9 @@ func (r *stream0Runtime) Start(parent context.Context) error {
 	r.lastDataActivity.Store(now)
 	r.lastPingTime.Store(now)
 
+	r.schedulerMu.Lock()
 	r.scheduler.SetMaxPackedBlocks(r.client.MaxPackedBlocks())
+	r.schedulerMu.Unlock()
 	r.wg.Add(2)
 	go r.txLoop()
 	go r.pingLoop()
@@ -119,7 +123,9 @@ func (r *stream0Runtime) SetMaxPackedBlocks(limit int) {
 	if r == nil {
 		return
 	}
+	r.schedulerMu.Lock()
 	r.scheduler.SetMaxPackedBlocks(limit)
+	r.schedulerMu.Unlock()
 }
 
 func (r *stream0Runtime) NotifyDNSActivity() {
@@ -137,8 +143,17 @@ func (r *stream0Runtime) QueueMainPacket(packet arq.QueuedPacket) bool {
 	if packet.Priority == 0 {
 		packet.Priority = arq.DefaultPriorityForPacket(packet.PacketType)
 	}
-	if !r.scheduler.Enqueue(arq.QueueTargetMain, packet) {
+	if !r.enqueuePacket(arq.QueueTargetMain, packet) {
 		return false
+	}
+	if r.client != nil && r.client.log != nil {
+		r.client.log.Debugf(
+			"🚀 <blue>Queued Main Packet, Packet: <cyan>%s</cyan> | Seq: <cyan>%d</cyan> | Bytes: <cyan>%d</cyan> | InFlight: <cyan>%d</cyan></blue>",
+			Enums.PacketTypeName(packet.PacketType),
+			packet.SequenceNum,
+			len(packet.Payload),
+			r.inFlight.Load(),
+		)
 	}
 	r.notifyWake()
 	return true
@@ -174,7 +189,7 @@ func (r *stream0Runtime) QueueDNSRequest(payload []byte) error {
 			Payload:         fragmentPayload,
 			Priority:        arq.DefaultPriorityForPacket(Enums.PACKET_DNS_QUERY_REQ),
 		}
-		if !r.scheduler.Enqueue(arq.QueueTargetMain, packet) {
+		if !r.enqueuePacket(arq.QueueTargetMain, packet) {
 			r.mu.Lock()
 			delete(r.dnsRequests, sequenceNum)
 			r.mu.Unlock()
@@ -208,7 +223,7 @@ func (r *stream0Runtime) QueuePing() bool {
 	if r == nil || !r.IsRunning() || r.client == nil || !r.client.SessionReady() {
 		return false
 	}
-	if r.scheduler.PendingPings() > 0 {
+	if r.pendingPings() > 0 {
 		return false
 	}
 
@@ -217,12 +232,18 @@ func (r *stream0Runtime) QueuePing() bool {
 		return false
 	}
 
-	if !r.scheduler.Enqueue(arq.QueueTargetMain, arq.QueuedPacket{
+	if !r.enqueuePacket(arq.QueueTargetMain, arq.QueuedPacket{
 		PacketType: Enums.PACKET_PING,
 		Payload:    payload,
 		Priority:   arq.DefaultPriorityForPacket(Enums.PACKET_PING),
 	}) {
 		return false
+	}
+	if r.client != nil && r.client.log != nil {
+		r.client.log.Debugf(
+			"🏓 <blue>Queued Poll Ping | InFlight: <cyan>%d</cyan></blue>",
+			r.inFlight.Load(),
+		)
 	}
 	r.notifyWake()
 	return true
@@ -232,7 +253,7 @@ func (r *stream0Runtime) QueueStreamPacket(streamID uint16, packetType uint8, se
 	if r == nil || !r.IsRunning() || streamID == 0 || r.client == nil || !r.client.SessionReady() {
 		return false
 	}
-	if !r.scheduler.Enqueue(arq.QueueTargetStream, arq.QueuedPacket{
+	if !r.enqueuePacket(arq.QueueTargetStream, arq.QueuedPacket{
 		PacketType:  packetType,
 		StreamID:    streamID,
 		SequenceNum: sequenceNum,
@@ -241,6 +262,16 @@ func (r *stream0Runtime) QueueStreamPacket(streamID uint16, packetType uint8, se
 	}) {
 		return false
 	}
+	if r.client != nil && r.client.log != nil {
+		r.client.log.Debugf(
+			"🚀 <blue>Queued Runtime Stream Packet, Stream ID: <cyan>%d</cyan> | Packet: <cyan>%s</cyan> | Seq: <cyan>%d</cyan> | Bytes: <cyan>%d</cyan> | InFlight: <cyan>%d</cyan></blue>",
+			streamID,
+			Enums.PacketTypeName(packetType),
+			sequenceNum,
+			len(payload),
+			r.inFlight.Load(),
+		)
+	}
 	r.notifyWake()
 	return true
 }
@@ -248,19 +279,40 @@ func (r *stream0Runtime) QueueStreamPacket(streamID uint16, packetType uint8, se
 func (r *stream0Runtime) txLoop() {
 	defer r.wg.Done()
 	for {
+		if r.ctx.Err() != nil {
+			r.failAllPending()
+			return
+		}
+
+		dispatched := false
+		for r.canDispatchMore() {
+			result, ok := r.dequeuePacket()
+			if !ok {
+				break
+			}
+			if r.client != nil && r.client.log != nil {
+				r.client.log.Debugf(
+					"🚀 <blue>Dequeued Runtime Packet, Packet: <cyan>%s</cyan> | Stream: <cyan>%d</cyan> | Seq: <cyan>%d</cyan> | Bytes: <cyan>%d</cyan> | InFlight: <cyan>%d/%d</cyan></blue>",
+					Enums.PacketTypeName(result.Packet.PacketType),
+					result.Packet.StreamID,
+					result.Packet.SequenceNum,
+					len(result.Packet.Payload),
+					r.inFlight.Load(),
+					r.dispatchLimit(),
+				)
+			}
+			dispatched = true
+			r.dispatchPacket(result.Packet)
+		}
+		if dispatched {
+			continue
+		}
+
 		select {
 		case <-r.ctx.Done():
 			r.failAllPending()
 			return
 		case <-r.wakeCh:
-		}
-
-		for {
-			result, ok := r.scheduler.Dequeue()
-			if !ok {
-				break
-			}
-			r.processDequeue(result.Packet)
 		}
 	}
 }
@@ -315,8 +367,10 @@ func (r *stream0Runtime) nextPingSchedule(now time.Time) (bool, time.Duration) {
 
 	hasPendingDNS := r.client != nil && r.client.hasPendingDNSWork()
 	activeStreams := 0
+	hasStreamTXWork := false
 	if r.client != nil {
 		activeStreams = r.client.activeStreamCount()
+		hasStreamTXWork = r.client.hasActiveStreamTXWork()
 	}
 
 	lastPingTime := time.Unix(0, r.lastPingTime.Load())
@@ -330,21 +384,25 @@ func (r *stream0Runtime) nextPingSchedule(now time.Time) (bool, time.Duration) {
 
 	// Context-aware interval optimization
 	if activeStreams > 0 {
-		if !r.dnsActivitySeen.Load() {
+		if hasStreamTXWork {
+			pingInterval = 80 * time.Millisecond
+			maxSleep = 50 * time.Millisecond
+		} else if !r.dnsActivitySeen.Load() {
 			// Session is active but no DNS traffic yet, ping slowly but consistently
-			pingInterval = 10 * time.Second
+			pingInterval = 2 * time.Second
+			maxSleep = 250 * time.Millisecond
 		} else if idleTime < stream0PingIdleMediumThreshold {
 			// Very active data flow
-			pingInterval = stream0PingBusyInterval
-			maxSleep = stream0PingBusyMaxSleep
+			pingInterval = 120 * time.Millisecond
+			maxSleep = 80 * time.Millisecond
 		} else if idleTime < stream0PingIdleHighThreshold {
 			// Moderate activity
-			pingInterval = stream0PingMediumIdleInterval
-			maxSleep = stream0PingMediumIdleMaxSleep
+			pingInterval = 300 * time.Millisecond
+			maxSleep = 120 * time.Millisecond
 		} else {
 			// High idle but still has active streams
-			pingInterval = stream0PingHighIdleInterval
-			maxSleep = stream0PingHighIdleMaxSleep
+			pingInterval = 750 * time.Millisecond
+			maxSleep = 200 * time.Millisecond
 		}
 	} else if hasPendingDNS {
 		if idleTime < stream0DNSOnlyWarmDuration {
@@ -377,58 +435,82 @@ func (r *stream0Runtime) nextPingSchedule(now time.Time) (bool, time.Duration) {
 func (r *stream0Runtime) processDequeue(packet arq.QueuedPacket) {
 	defer arq.FreePayload(packet.Payload)
 
-	response, err := r.client.sendScheduledPacket(packet)
-	if err != nil {
-		r.handleDequeueFailure(packet, time.Now())
+	if r.client != nil && r.client.exchangeQueryFn == nil && packet.PacketType != Enums.PACKET_PING {
+		sentAt := time.Now()
+		if r.client.log != nil {
+			r.client.log.Debugf(
+				"🚀 <blue>Shooting Runtime Packet, Packet: <cyan>%s</cyan> | Stream: <cyan>%d</cyan> | Seq: <cyan>%d</cyan> | Bytes: <cyan>%d</cyan> | InFlight: <cyan>%d</cyan></blue>",
+				Enums.PacketTypeName(packet.PacketType),
+				packet.StreamID,
+				packet.SequenceNum,
+				len(packet.Payload),
+				r.inFlight.Load(),
+			)
+		}
+		if err := r.client.sendQueuedRuntimePacket(packet); err != nil {
+			r.handleDequeueFailure(packet, sentAt)
+			return
+		}
+		if r.client.log != nil {
+			r.client.log.Debugf(
+				"🚀 <blue>Shot Runtime Packet, Packet: <cyan>%s</cyan> | Stream: <cyan>%d</cyan> | Seq: <cyan>%d</cyan> | Elapsed: <cyan>%s</cyan></blue>",
+				Enums.PacketTypeName(packet.PacketType),
+				packet.StreamID,
+				packet.SequenceNum,
+				time.Since(sentAt).Round(time.Millisecond),
+			)
+		}
+		if r.client.sessionResetPending.Load() {
+			return
+		}
+		switch {
+		case packet.StreamID != 0:
+			armClientStreamTXRetry(r.client, packet.StreamID, packet.SequenceNum, sentAt)
+		case packet.PacketType == Enums.PACKET_DNS_QUERY_REQ:
+			r.armDNSRequestFragmentRetry(packet, sentAt)
+		}
 		return
 	}
 
-	dnsRequestAcked := false
+	response, err := r.client.sendScheduledPacket(packet)
+	if err != nil {
+		if r.client != nil && r.client.log != nil {
+			r.client.log.Debugf(
+				"🏓 <yellow>Runtime Packet Roundtrip Failed, Packet: <cyan>%s</cyan> | Stream: <cyan>%d</cyan> | Seq: <cyan>%d</cyan></yellow>",
+				Enums.PacketTypeName(packet.PacketType),
+				packet.StreamID,
+				packet.SequenceNum,
+			)
+		}
+		r.handleDequeueFailure(packet, time.Now())
+		return
+	}
+	if r.client != nil && r.client.log != nil {
+		r.client.log.Debugf(
+			"🏓 <blue>Runtime Packet Reply Received, Sent: <cyan>%s</cyan> | Reply: <cyan>%s</cyan> | Stream: <cyan>%d</cyan> | Seq: <cyan>%d</cyan></blue>",
+			Enums.PacketTypeName(packet.PacketType),
+			Enums.PacketTypeName(response.PacketType),
+			packet.StreamID,
+			packet.SequenceNum,
+		)
+	}
+
+	queuedAcked := false
 	now := time.Now()
-	switch response.PacketType {
-	case Enums.PACKET_PACKED_CONTROL_BLOCKS:
+	if response.PacketType != 0 {
 		r.noteServerDataActivity()
-		if err := r.client.handlePackedServerControlBlocks(response.Payload, time.Second); err != nil && r.client.log != nil {
+		dispatch, dispatchErr := r.client.dispatchServerPacket(response, time.Second, &packet)
+		queuedAcked = dispatch.ackedQueued
+		if dispatchErr != nil && !errors.Is(dispatchErr, ErrSessionDropped) && r.client.log != nil {
 			r.client.log.Debugf(
-				"🧵 <yellow>Packed Control Handling Failed: <cyan>%v</cyan></yellow>",
-				err,
+				"🧵 <yellow>Runtime Packet Dispatch Failed: <cyan>%v</cyan></yellow>",
+				dispatchErr,
 			)
 		}
-	case Enums.PACKET_DNS_QUERY_REQ_ACK:
-		r.noteServerDataActivity()
-		dnsRequestAcked = r.ackDNSRequestFragment(response)
-	case Enums.PACKET_DNS_QUERY_RES:
-		r.noteServerDataActivity()
-		if err := r.client.handleInboundDNSResponseFragment(response); err != nil && r.client.log != nil {
-			r.client.log.Debugf(
-				"\U0001F9E9 <yellow>DNS Response Fragment Handling Failed: <cyan>%v</cyan></yellow>",
-				err,
-			)
-		}
-	case Enums.PACKET_STREAM_DATA_ACK, Enums.PACKET_STREAM_FIN_ACK, Enums.PACKET_STREAM_RST_ACK:
-		r.noteServerDataActivity()
-		r.client.noteStreamProgress(response.StreamID)
-		if stream, ok := r.client.getStream(response.StreamID); ok {
-			ackClientStreamTX(stream, response.SequenceNum, now)
-			notifyStreamWake(stream)
-		}
-	case Enums.PACKET_PONG:
-		r.noteServerDataActivity()
-	case Enums.PACKET_STREAM_DATA, Enums.PACKET_STREAM_FIN, Enums.PACKET_STREAM_RST:
-		r.noteServerDataActivity()
-		if err := r.client.handleFollowUpServerPacket(response, time.Second); err != nil && r.client.log != nil {
-			r.client.log.Debugf(
-				"🧵 <yellow>Stream Runtime Packet Handling Failed: <cyan>%v</cyan></yellow>",
-				err,
-			)
-		}
-	case 0:
-	default:
-		if response.PacketType != 0 {
-			r.noteServerDataActivity()
-			if err := r.client.handleAsyncServerPacket(response, time.Second); err != nil && !errors.Is(err, ErrSessionDropped) && r.client.log != nil {
+		if dispatch.hasNext {
+			if err := r.client.handleFollowUpServerPacket(dispatch.next, time.Second); err != nil && r.client.log != nil {
 				r.client.log.Debugf(
-					"🧵 <yellow>Main Queue Packet Handling Failed: <cyan>%v</cyan></yellow>",
+					"🧵 <yellow>Runtime Follow-up Handling Failed: <cyan>%v</cyan></yellow>",
 					err,
 				)
 			}
@@ -441,11 +523,11 @@ func (r *stream0Runtime) processDequeue(packet arq.QueuedPacket) {
 
 	switch {
 	case packet.StreamID != 0:
-		if !isResolvedStreamPacketResponse(packet, response) {
+		if !queuedAcked && !isResolvedStreamPacketResponse(packet, response) {
 			r.rescheduleStreamPacket(packet.StreamID, packet.SequenceNum)
 		}
 	case packet.PacketType == Enums.PACKET_DNS_QUERY_REQ:
-		if !dnsRequestAcked {
+		if !queuedAcked {
 			r.rescheduleDNSRequestFragment(packet, now)
 		}
 	}
@@ -526,6 +608,26 @@ func (r *stream0Runtime) rescheduleDNSRequestFragment(packet arq.QueuedPacket, n
 	fragment.retryDelay = delay
 }
 
+func (r *stream0Runtime) armDNSRequestFragmentRetry(packet arq.QueuedPacket, now time.Time) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+
+	state := r.dnsRequests[packet.SequenceNum]
+	if state == nil {
+		return
+	}
+	fragment := state.fragments[packet.FragmentID]
+	if fragment == nil {
+		return
+	}
+	delay := fragment.retryDelay
+	if delay <= 0 {
+		delay = stream0DNSRetryBaseDelay
+	}
+	fragment.scheduled = false
+	fragment.retryAt = now.Add(delay)
+}
+
 func (r *stream0Runtime) queueDueDNSRetries(now time.Time) time.Duration {
 	if r == nil || r.client == nil {
 		return time.Second
@@ -571,7 +673,7 @@ func (r *stream0Runtime) queueDueDNSRetries(now time.Time) time.Duration {
 	}
 
 	for _, packet := range due {
-		if r.scheduler.Enqueue(arq.QueueTargetMain, packet) {
+		if r.enqueuePacket(arq.QueueTargetMain, packet) {
 			continue
 		}
 		r.mu.Lock()
@@ -602,6 +704,41 @@ func (r *stream0Runtime) notifyWake() {
 	}
 }
 
+func (r *stream0Runtime) canDispatchMore() bool {
+	if r == nil {
+		return false
+	}
+	return int(r.inFlight.Load()) < r.dispatchLimit()
+}
+
+func (r *stream0Runtime) dispatchLimit() int {
+	if r == nil || r.client == nil {
+		return 4
+	}
+	limit := r.client.effectiveStreamTXWindow()
+	if limit < 4 {
+		limit = 4
+	}
+	if limit > 8 {
+		limit = 8
+	}
+	return limit
+}
+
+func (r *stream0Runtime) dispatchPacket(packet arq.QueuedPacket) {
+	if r == nil {
+		return
+	}
+	r.inFlight.Add(1)
+	go func() {
+		defer func() {
+			r.inFlight.Add(-1)
+			r.notifyWake()
+		}()
+		r.processDequeue(packet)
+	}()
+}
+
 func (r *stream0Runtime) failAllPending() {
 	r.mu.Lock()
 	r.dnsRequests = make(map[uint16]*stream0DNSRequestState, 4)
@@ -622,8 +759,37 @@ func (r *stream0Runtime) ResetForReconnect() {
 	r.lastDataActivity.Store(now)
 	r.lastPingTime.Store(now)
 	if r.scheduler != nil {
+		r.schedulerMu.Lock()
 		r.scheduler.HandleSessionReset()
+		r.schedulerMu.Unlock()
 	}
+}
+
+func (r *stream0Runtime) enqueuePacket(target arq.QueueTarget, packet arq.QueuedPacket) bool {
+	if r == nil || r.scheduler == nil {
+		return false
+	}
+	r.schedulerMu.Lock()
+	defer r.schedulerMu.Unlock()
+	return r.scheduler.Enqueue(target, packet)
+}
+
+func (r *stream0Runtime) dequeuePacket() (arq.DequeueResult, bool) {
+	if r == nil || r.scheduler == nil {
+		return arq.DequeueResult{}, false
+	}
+	r.schedulerMu.Lock()
+	defer r.schedulerMu.Unlock()
+	return r.scheduler.Dequeue()
+}
+
+func (r *stream0Runtime) pendingPings() int {
+	if r == nil || r.scheduler == nil {
+		return 0
+	}
+	r.schedulerMu.Lock()
+	defer r.schedulerMu.Unlock()
+	return r.scheduler.PendingPings()
 }
 
 func (r *stream0Runtime) rescheduleStreamPacket(streamID uint16, sequenceNum uint16) {

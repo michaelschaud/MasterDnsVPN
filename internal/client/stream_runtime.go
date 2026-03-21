@@ -67,17 +67,13 @@ func (c *Client) sendStreamData(stream *clientStream, payload []byte, timeout ti
 	if c == nil || stream == nil {
 		return ErrClientStreamClosed
 	}
-	packet, err := c.exchangeStreamControlPacket(
+	return c.sendStreamProtocolOneWay(
 		Enums.PACKET_STREAM_DATA,
 		stream.ID,
 		c.nextClientStreamSequence(stream),
 		payload,
 		timeout,
 	)
-	if err != nil {
-		return err
-	}
-	return c.handleFollowUpServerPacket(packet, timeout)
 }
 
 func (c *Client) sendStreamFIN(stream *clientStream, timeout time.Duration) error {
@@ -92,17 +88,13 @@ func (c *Client) sendStreamFIN(stream *clientStream, timeout time.Duration) erro
 	stream.LocalFinSent = true
 	stream.mu.Unlock()
 
-	packet, err := c.exchangeStreamControlPacket(
+	return c.sendStreamProtocolOneWay(
 		Enums.PACKET_STREAM_FIN,
 		stream.ID,
 		c.nextClientStreamSequence(stream),
 		nil,
 		timeout,
 	)
-	if err != nil {
-		return err
-	}
-	return c.handleFollowUpServerPacket(packet, timeout)
 }
 
 func (c *Client) sendStreamRST(stream *clientStream, timeout time.Duration) error {
@@ -117,67 +109,44 @@ func (c *Client) sendStreamRST(stream *clientStream, timeout time.Duration) erro
 	stream.ResetSent = true
 	stream.mu.Unlock()
 
-	packet, err := c.exchangeStreamControlPacket(
+	return c.sendStreamProtocolOneWay(
 		Enums.PACKET_STREAM_RST,
 		stream.ID,
 		c.nextClientStreamSequence(stream),
 		nil,
 		timeout,
 	)
-	if err != nil {
-		return err
-	}
-	return c.handleFollowUpServerPacket(packet, timeout)
 }
 
 func (c *Client) handleFollowUpServerPacket(packet VpnProto.Packet, timeout time.Duration) error {
 	current := packet
 	for range maxClientStreamFollowUps {
-		switch current.PacketType {
-		case 0, Enums.PACKET_PONG, Enums.PACKET_STREAM_DATA_ACK, Enums.PACKET_STREAM_FIN_ACK, Enums.PACKET_STREAM_RST_ACK, Enums.PACKET_STREAM_SYN_ACK, Enums.PACKET_SOCKS5_SYN_ACK, Enums.PACKET_SESSION_BUSY:
-			return nil
-		case Enums.PACKET_ERROR_DROP:
-			return c.handleServerDropPacket(current)
-		case Enums.PACKET_DNS_QUERY_REQ_ACK:
-			if c.stream0Runtime != nil {
-				c.stream0Runtime.ackDNSRequestFragment(current)
-			}
-			return nil
-		case Enums.PACKET_DNS_QUERY_RES:
-			return c.handleInboundDNSResponseFragment(current)
-		case Enums.PACKET_PACKED_CONTROL_BLOCKS:
-			return c.handlePackedServerControlBlocks(current.Payload, timeout)
-		case Enums.PACKET_STREAM_DATA, Enums.PACKET_STREAM_FIN, Enums.PACKET_STREAM_RST:
-			nextPacket, err := c.handleInboundStreamPacket(current, timeout)
-			if err != nil {
-				return err
-			}
-			current = nextPacket
-		default:
-			if isSOCKS5ErrorPacket(current.PacketType) {
-				return errors.New(Enums.PacketTypeName(current.PacketType))
-			}
+		dispatch, err := c.dispatchServerPacket(current, timeout, nil)
+		if err != nil {
+			return err
+		}
+		if dispatch.stop || !dispatch.hasNext {
 			return nil
 		}
+		current = dispatch.next
 	}
 	return nil
 }
 
 func (c *Client) handlePackedServerControlBlocks(payload []byte, timeout time.Duration) error {
+	_, err := c.handlePackedServerControlBlocksForQueuedPacket(payload, timeout, nil)
+	return err
+}
+
+func (c *Client) handlePackedServerControlBlocksForQueuedPacket(payload []byte, timeout time.Duration, sent *arq.QueuedPacket) (bool, error) {
 	if len(payload) < arq.PackedControlBlockSize {
-		return nil
+		return false, nil
 	}
+	c.cachePackedStreamControlReplies(payload)
 	var firstErr error
+	ackedSent := false
 	arq.ForEachPackedControlBlock(payload, func(packetType uint8, streamID uint16, sequenceNum uint16, fragmentID uint8, totalFragments uint8) bool {
 		if packetType == Enums.PACKET_PACKED_CONTROL_BLOCKS {
-			return true
-		}
-		switch packetType {
-		case Enums.PACKET_STREAM_DATA_ACK, Enums.PACKET_STREAM_FIN_ACK, Enums.PACKET_STREAM_RST_ACK:
-			if stream, ok := c.getStream(streamID); ok {
-				ackClientStreamTX(stream, sequenceNum, time.Now())
-				notifyStreamWake(stream)
-			}
 			return true
 		}
 		packet := VpnProto.Packet{
@@ -189,13 +158,46 @@ func (c *Client) handlePackedServerControlBlocks(payload []byte, timeout time.Du
 			FragmentID:     fragmentID,
 			TotalFragments: totalFragments,
 		}
-		if err := c.handleFollowUpServerPacket(packet, timeout); err != nil && firstErr == nil {
+		dispatch, err := c.dispatchServerPacket(packet, timeout, sent)
+		if dispatch.ackedQueued {
+			ackedSent = true
+		}
+		if err != nil && firstErr == nil {
 			firstErr = err
 			return false
 		}
+		if dispatch.hasNext {
+			if err := c.handleFollowUpServerPacket(dispatch.next, timeout); err != nil && firstErr == nil {
+				firstErr = err
+				return false
+			}
+		}
 		return true
 	})
-	return firstErr
+	return ackedSent, firstErr
+}
+
+func matchesQueuedPacketAck(sent arq.QueuedPacket, packetType uint8, streamID uint16, sequenceNum uint16, fragmentID uint8, totalFragments uint8) bool {
+	if sent.StreamID != 0 {
+		if sent.StreamID != streamID || sent.SequenceNum != sequenceNum {
+			return false
+		}
+		return matchesClientStreamAck(sent.PacketType, packetType)
+	}
+	if sent.PacketType != Enums.PACKET_DNS_QUERY_REQ || packetType != Enums.PACKET_DNS_QUERY_REQ_ACK {
+		return false
+	}
+	if sent.SequenceNum != sequenceNum || sent.FragmentID != fragmentID {
+		return false
+	}
+	expectedTotal := sent.TotalFragments
+	if expectedTotal == 0 {
+		expectedTotal = 1
+	}
+	if totalFragments == 0 {
+		totalFragments = 1
+	}
+	return expectedTotal == totalFragments
 }
 
 func (c *Client) handleInboundStreamPacket(packet VpnProto.Packet, timeout time.Duration) (VpnProto.Packet, error) {
@@ -204,7 +206,10 @@ func (c *Client) handleInboundStreamPacket(packet VpnProto.Packet, timeout time.
 		if closedResponse, handled, err := c.handleClosedStreamPacket(packet, timeout); handled {
 			return closedResponse, err
 		}
-		return c.exchangeStreamControlPacket(Enums.PACKET_STREAM_RST, packet.StreamID, packet.SequenceNum, nil, timeout)
+		if err := c.sendStreamProtocolOneWay(Enums.PACKET_STREAM_RST, packet.StreamID, packet.SequenceNum, nil, timeout); err != nil {
+			return VpnProto.Packet{}, err
+		}
+		return VpnProto.Packet{}, nil
 	}
 
 	stream.mu.Lock()
@@ -213,11 +218,19 @@ func (c *Client) handleInboundStreamPacket(packet VpnProto.Packet, timeout time.
 
 	switch packet.PacketType {
 	case Enums.PACKET_STREAM_DATA:
+		if c.log != nil && len(packet.Payload) != 0 {
+			c.log.Debugf(
+				"📥 <blue>Inbound Stream Data, Stream ID: <cyan>%d</cyan> | Seq: <cyan>%d</cyan> | Bytes: <cyan>%d</cyan></blue>",
+				stream.ID,
+				packet.SequenceNum,
+				len(packet.Payload),
+			)
+		}
 		c.noteStreamProgress(stream.ID)
 		stream.mu.Lock()
 		if stream.InboundDataSet && streamutil.SequenceSeenOrOlder(stream.InboundDataSeq, packet.SequenceNum) {
 			stream.mu.Unlock()
-			return c.exchangeStreamControlPacket(Enums.PACKET_STREAM_DATA_ACK, stream.ID, packet.SequenceNum, nil, timeout)
+			return c.sendStreamAckOneWay(Enums.PACKET_STREAM_DATA_ACK, stream.ID, packet.SequenceNum)
 		}
 		stream.InboundDataSeq = packet.SequenceNum
 		stream.InboundDataSet = true
@@ -228,16 +241,19 @@ func (c *Client) handleInboundStreamPacket(packet VpnProto.Packet, timeout time.
 				stream.Closed = true
 				stream.mu.Unlock()
 				c.deleteStream(stream.ID)
-				return c.exchangeStreamControlPacket(Enums.PACKET_STREAM_RST, stream.ID, packet.SequenceNum, nil, timeout)
+				if err := c.sendStreamProtocolOneWay(Enums.PACKET_STREAM_RST, stream.ID, packet.SequenceNum, nil, timeout); err != nil {
+					return VpnProto.Packet{}, err
+				}
+				return VpnProto.Packet{}, nil
 			}
 		}
-		return c.exchangeStreamControlPacket(Enums.PACKET_STREAM_DATA_ACK, stream.ID, packet.SequenceNum, nil, timeout)
+		return c.sendStreamAckOneWay(Enums.PACKET_STREAM_DATA_ACK, stream.ID, packet.SequenceNum)
 	case Enums.PACKET_STREAM_FIN:
 		c.noteStreamProgress(stream.ID)
 		stream.mu.Lock()
 		if stream.RemoteFinSet && stream.RemoteFinSeq == packet.SequenceNum {
 			stream.mu.Unlock()
-			return c.exchangeStreamControlPacket(Enums.PACKET_STREAM_FIN_ACK, stream.ID, packet.SequenceNum, nil, timeout)
+			return c.sendStreamAckOneWay(Enums.PACKET_STREAM_FIN_ACK, stream.ID, packet.SequenceNum)
 		}
 		stream.RemoteFinSeq = packet.SequenceNum
 		stream.RemoteFinSet = true
@@ -247,17 +263,51 @@ func (c *Client) handleInboundStreamPacket(packet VpnProto.Packet, timeout time.
 		if streamFinished(stream) {
 			c.deleteStream(stream.ID)
 		}
-		return c.exchangeStreamControlPacket(Enums.PACKET_STREAM_FIN_ACK, stream.ID, packet.SequenceNum, nil, timeout)
+		return c.sendStreamAckOneWay(Enums.PACKET_STREAM_FIN_ACK, stream.ID, packet.SequenceNum)
 	case Enums.PACKET_STREAM_RST:
 		c.noteStreamProgress(stream.ID)
 		stream.mu.Lock()
 		stream.Closed = true
 		stream.mu.Unlock()
 		c.deleteStream(stream.ID)
-		return c.exchangeStreamControlPacket(Enums.PACKET_STREAM_RST_ACK, stream.ID, packet.SequenceNum, nil, timeout)
+		return c.sendStreamAckOneWay(Enums.PACKET_STREAM_RST_ACK, stream.ID, packet.SequenceNum)
 	default:
 		return VpnProto.Packet{}, nil
 	}
+}
+
+func (c *Client) sendStreamAckOneWay(packetType uint8, streamID uint16, sequenceNum uint16) (VpnProto.Packet, error) {
+	if c == nil {
+		return VpnProto.Packet{}, ErrClientStreamClosed
+	}
+	err := c.sendStreamProtocolOneWay(packetType, streamID, sequenceNum, nil, defaultRuntimeTimeout)
+	return VpnProto.Packet{}, err
+}
+
+func (c *Client) sendStreamProtocolOneWay(packetType uint8, streamID uint16, sequenceNum uint16, payload []byte, timeout time.Duration) error {
+	if c == nil || streamID == 0 {
+		return ErrClientStreamClosed
+	}
+	if !c.SessionReady() {
+		return ErrTunnelDNSDispatchFailed
+	}
+
+	connections, err := c.selectTargetConnectionsForPacket(packetType, streamID)
+	if err != nil {
+		return err
+	}
+
+	packet := arq.QueuedPacket{
+		PacketType:  packetType,
+		StreamID:    streamID,
+		SequenceNum: sequenceNum,
+		Payload:     payload,
+		Priority:    arq.DefaultPriorityForPacket(packetType),
+	}
+	deadline := time.Now().Add(normalizeTimeout(timeout, defaultRuntimeTimeout))
+	return sendRuntimeQueuedPacketParallel(connections, ErrTunnelDNSDispatchFailed, func(connection Connection) error {
+		return c.sendQueuedRuntimePacketWithConnection(connection, packet, deadline)
+	})
 }
 
 func (c *Client) queueStreamPacket(stream *clientStream, packetType uint8, payload []byte) error {
@@ -304,7 +354,20 @@ func (c *Client) queueStreamPacket(stream *clientStream, packetType uint8, paylo
 		RetryDelay:  streamRetryBaseLocked(stream),
 	}
 	stream.TXQueue = append(stream.TXQueue, packet)
+	queueLen := len(stream.TXQueue)
+	inFlightLen := len(stream.TXInFlight)
 	notifyStreamWake(stream)
+	if c.log != nil {
+		c.log.Debugf(
+			"📤 <blue>Queued Stream Packet, Stream ID: <cyan>%d</cyan> | Packet: <cyan>%s</cyan> | Seq: <cyan>%d</cyan> | Bytes: <cyan>%d</cyan> | Queue: <cyan>%d</cyan> | InFlight: <cyan>%d</cyan></blue>",
+			stream.ID,
+			Enums.PacketTypeName(packetType),
+			sequenceNum,
+			len(payload),
+			queueLen,
+			inFlightLen,
+		)
+	}
 	return nil
 }
 
@@ -379,21 +442,12 @@ func (c *Client) runClientStreamTXLoop(stream *clientStream, timeout time.Durati
 			if packetType == Enums.PACKET_STREAM_DATA && packet.RetryCount > 0 {
 				packetType = Enums.PACKET_STREAM_RESEND
 			}
-			response, err := c.exchangeStreamControlPacket(packetType, stream.ID, packet.SequenceNum, packet.Payload, timeout)
-			if err != nil {
+			sentAt := time.Now()
+			if err := c.sendStreamProtocolOneWay(packetType, stream.ID, packet.SequenceNum, packet.Payload, timeout); err != nil {
 				rescheduleClientStreamTX(stream, packet.SequenceNum)
 				continue
 			}
-			acked := ackClientStreamTXByResponse(stream, packet.PacketType, response, time.Now())
-			if err := c.handleFollowUpServerPacket(response, timeout); err != nil {
-				if !acked {
-					rescheduleClientStreamTX(stream, packet.SequenceNum)
-				}
-				continue
-			}
-			if !acked {
-				rescheduleClientStreamTX(stream, packet.SequenceNum)
-			}
+			armClientStreamTXRetry(c, stream.ID, packet.SequenceNum, sentAt)
 			if streamFinished(stream) {
 				c.deleteStream(stream.ID)
 				return
@@ -406,6 +460,16 @@ func (c *Client) runClientStreamTXLoop(stream *clientStream, timeout time.Durati
 		packetType := packet.PacketType
 		if packetType == Enums.PACKET_STREAM_DATA && packet.RetryCount > 0 {
 			packetType = Enums.PACKET_STREAM_RESEND
+		}
+		if c.log != nil {
+			c.log.Debugf(
+				"📤 <blue>Dispatching Stream Packet, Stream ID: <cyan>%d</cyan> | Packet: <cyan>%s</cyan> | Seq: <cyan>%d</cyan> | Retry: <cyan>%d</cyan> | Bytes: <cyan>%d</cyan></blue>",
+				stream.ID,
+				Enums.PacketTypeName(packetType),
+				packet.SequenceNum,
+				packet.RetryCount,
+				len(packet.Payload),
+			)
 		}
 		if !c.stream0Runtime.QueueStreamPacket(stream.ID, packetType, packet.SequenceNum, packet.Payload) {
 			rescheduleClientStreamTX(stream, packet.SequenceNum)
@@ -489,6 +553,31 @@ func rescheduleClientStreamTX(stream *clientStream, sequenceNum uint16) {
 	}
 }
 
+func armClientStreamTXRetry(c *Client, streamID uint16, sequenceNum uint16, sentAt time.Time) {
+	if c == nil || streamID == 0 {
+		return
+	}
+	stream, ok := c.getStream(streamID)
+	if !ok || stream == nil {
+		return
+	}
+	stream.mu.Lock()
+	defer stream.mu.Unlock()
+	for idx := range stream.TXInFlight {
+		if stream.TXInFlight[idx].SequenceNum != sequenceNum {
+			continue
+		}
+		delay := stream.TXInFlight[idx].RetryDelay
+		if delay <= 0 {
+			delay = streamRetryBaseLocked(stream)
+		}
+		stream.TXInFlight[idx].Scheduled = false
+		stream.TXInFlight[idx].LastSentAt = sentAt
+		stream.TXInFlight[idx].RetryAt = sentAt.Add(delay)
+		return
+	}
+}
+
 func markClientStreamTXScheduled(stream *clientStream, sequenceNum uint16) bool {
 	if stream == nil {
 		return false
@@ -510,6 +599,23 @@ func markClientStreamTXScheduled(stream *clientStream, sequenceNum uint16) bool 
 }
 
 func ackClientStreamTX(stream *clientStream, sequenceNum uint16, ackedAt time.Time) {
+	ackClientStreamTXWithLog(nil, stream, sequenceNum, ackedAt)
+}
+
+func logClientStreamACK(c *Client, stream *clientStream, packetType uint8, sequenceNum uint16, payloadLen int) {
+	if c == nil || c.log == nil || stream == nil {
+		return
+	}
+	c.log.Debugf(
+		"✅ <green>Stream Packet ACKed, Stream ID: <cyan>%d</cyan> | Packet: <cyan>%s</cyan> | Seq: <cyan>%d</cyan> | Bytes: <cyan>%d</cyan></green>",
+		stream.ID,
+		Enums.PacketTypeName(packetType),
+		sequenceNum,
+		payloadLen,
+	)
+}
+
+func ackClientStreamTXWithLog(c *Client, stream *clientStream, sequenceNum uint16, ackedAt time.Time) {
 	if stream == nil {
 		return
 	}
@@ -519,6 +625,8 @@ func ackClientStreamTX(stream *clientStream, sequenceNum uint16, ackedAt time.Ti
 		if stream.TXInFlight[idx].SequenceNum != sequenceNum {
 			continue
 		}
+		packetType := stream.TXInFlight[idx].PacketType
+		payloadLen := len(stream.TXInFlight[idx].Payload)
 		updateClientStreamRTO(stream, stream.TXInFlight[idx], ackedAt)
 		// Release payload back to pool
 		if stream.TXInFlight[idx].Payload != nil {
@@ -528,6 +636,7 @@ func ackClientStreamTX(stream *clientStream, sequenceNum uint16, ackedAt time.Ti
 		lastIdx := len(stream.TXInFlight) - 1
 		stream.TXInFlight[lastIdx] = clientStreamTXPacket{}
 		stream.TXInFlight = stream.TXInFlight[:lastIdx]
+		logClientStreamACK(c, stream, packetType, sequenceNum, payloadLen)
 		return
 	}
 }
@@ -589,6 +698,13 @@ func (c *Client) runLocalStreamReadLoop(stream *clientStream, timeout time.Durat
 	for {
 		n, err := stream.Conn.Read(buffer)
 		if n > 0 {
+			if c.log != nil {
+				c.log.Debugf(
+					"📤 <blue>Local Stream Read, Stream ID: <cyan>%d</cyan> | Bytes: <cyan>%d</cyan></blue>",
+					stream.ID,
+					n,
+				)
+			}
 			if sendErr := c.queueStreamPacket(stream, Enums.PACKET_STREAM_DATA, buffer[:n]); sendErr != nil {
 				_ = c.queueStreamPacket(stream, Enums.PACKET_STREAM_RST, nil)
 				return

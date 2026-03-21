@@ -292,3 +292,85 @@ func TestSchedulerRejectsPacketsThatMustNotEnterQueues(t *testing.T) {
 		t.Fatal("PACKED_CONTROL_BLOCKS should never be queued directly")
 	}
 }
+
+func TestSchedulerRejectsDuplicateSingleInstanceControl(t *testing.T) {
+	scheduler := NewScheduler(1)
+	packet := QueuedPacket{
+		PacketType:  Enums.PACKET_STREAM_FIN,
+		StreamID:    12,
+		SequenceNum: 3,
+		Priority:    4,
+	}
+	if !scheduler.Enqueue(QueueTargetStream, packet) {
+		t.Fatal("expected first single-instance control enqueue to succeed")
+	}
+	if scheduler.Enqueue(QueueTargetStream, packet) {
+		t.Fatal("duplicate single-instance control should be rejected")
+	}
+}
+
+func TestSchedulerRejectsDuplicateSequenceKeyedControl(t *testing.T) {
+	scheduler := NewScheduler(1)
+	packet := QueuedPacket{
+		PacketType:  Enums.PACKET_SOCKS5_CONNECT_FAIL,
+		StreamID:    14,
+		SequenceNum: 9,
+		Priority:    0,
+	}
+	if !scheduler.Enqueue(QueueTargetMain, packet) {
+		t.Fatal("expected first sequence-keyed control enqueue to succeed")
+	}
+	if scheduler.Enqueue(QueueTargetMain, packet) {
+		t.Fatal("duplicate sequence-keyed control should be rejected")
+	}
+}
+
+func TestSchedulerRejectsDuplicateFragmentKeyedControlButKeepsDistinctFragments(t *testing.T) {
+	scheduler := NewScheduler(4)
+	first := QueuedPacket{
+		PacketType:      Enums.PACKET_DNS_QUERY_REQ_ACK,
+		StreamID:        0,
+		SequenceNum:     22,
+		FragmentID:      0,
+		TotalFragments:  2,
+		CompressionType: 0,
+	}
+	duplicate := first
+	secondFragment := first
+	secondFragment.FragmentID = 1
+
+	if !scheduler.Enqueue(QueueTargetMain, first) {
+		t.Fatal("expected first fragment-keyed enqueue to succeed")
+	}
+	if scheduler.Enqueue(QueueTargetMain, duplicate) {
+		t.Fatal("duplicate fragment-keyed packet should be rejected")
+	}
+	if !scheduler.Enqueue(QueueTargetMain, secondFragment) {
+		t.Fatal("distinct fragment should be accepted")
+	}
+
+	firstOut, ok := scheduler.Dequeue()
+	if !ok {
+		t.Fatal("expected first dequeue result")
+	}
+	if firstOut.Packet.PacketType != Enums.PACKET_PACKED_CONTROL_BLOCKS {
+		t.Fatalf("expected distinct fragments to be packed together, got packet type=%d", firstOut.Packet.PacketType)
+	}
+	if firstOut.PackedBlocks != 2 {
+		t.Fatalf("expected two surviving fragments in packed dequeue, got=%d", firstOut.PackedBlocks)
+	}
+	var fragments []uint8
+	ForEachPackedControlBlock(firstOut.Packet.Payload, func(packetType uint8, streamID uint16, sequenceNum uint16, fragmentID uint8, totalFragments uint8) bool {
+		if packetType != Enums.PACKET_DNS_QUERY_REQ_ACK {
+			t.Fatalf("unexpected packed packet type: got=%d want=%d", packetType, Enums.PACKET_DNS_QUERY_REQ_ACK)
+		}
+		if streamID != 0 || sequenceNum != 22 || totalFragments != 2 {
+			t.Fatalf("unexpected packed fragment metadata: stream=%d seq=%d total=%d", streamID, sequenceNum, totalFragments)
+		}
+		fragments = append(fragments, fragmentID)
+		return true
+	})
+	if len(fragments) != 2 || fragments[0] == fragments[1] {
+		t.Fatalf("expected distinct fragments to survive dedupe, got %v", fragments)
+	}
+}
