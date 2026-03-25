@@ -414,6 +414,9 @@ func (c *Client) HandleStreamPacket(packet VpnProto.Packet) error {
 
 	switch packet.PacketType {
 	case Enums.PACKET_STREAM_DATA, Enums.PACKET_STREAM_RESEND:
+		if arqObj.IsClosed() || !s.TerminalSince().IsZero() {
+			return nil
+		}
 		arqObj.ReceiveData(packet.SequenceNum, packet.Payload)
 	case Enums.PACKET_STREAM_CONNECTED:
 		return c.handleStreamConnected(packet, s, arqObj)
@@ -462,6 +465,5 @@ func (c *Client) HandleErrorDrop(packet VpnProto.Packet) error {
 }
 
 func (c *Client) HandleMTUResponse(packet VpnProto.Packet) error {
-	// TODO: Implementing MTU response logic
 	return nil
 }

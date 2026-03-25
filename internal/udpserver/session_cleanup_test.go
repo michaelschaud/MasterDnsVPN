@@ -203,3 +203,83 @@ func TestDequeueSessionResponseDuplicatesLastPackedControlBlock(t *testing.T) {
 		t.Fatalf("expected no more queued packets after cached duplicates are exhausted")
 	}
 }
+
+func TestDeactivateStreamRemovesClosedStreamFromRoundRobinAndClearsQueue(t *testing.T) {
+	record := newTestSessionRecord(13)
+	stream := record.getOrCreateStream(9, arq.Config{}, nil, nil)
+	if stream == nil {
+		t.Fatal("expected stream to be created")
+	}
+	if !stream.PushTXPacket(Enums.DefaultPacketPriority(Enums.PACKET_STREAM_DATA), Enums.PACKET_STREAM_DATA, 77, 0, 0, 0, 0, []byte("stale")) {
+		t.Fatal("expected stale data to be queued")
+	}
+
+	stream.ClearTXQueue()
+	record.deactivateStream(9)
+
+	if stream.TXQueue.Size() != 0 {
+		t.Fatalf("expected TX queue to be cleared, got %d", stream.TXQueue.Size())
+	}
+
+	record.StreamsMu.RLock()
+	defer record.StreamsMu.RUnlock()
+	for _, id := range record.ActiveStreams {
+		if id == 9 {
+			t.Fatal("expected closed stream to be removed from ActiveStreams")
+		}
+	}
+}
+
+func TestHandleStreamRSTRequestPreservesRstAckViaOrphanQueue(t *testing.T) {
+	s := newTestServerForStreamSyn("TCP")
+	record := newTestSessionRecord(14)
+	record.Cookie = 7
+	s.sessions.byID[record.ID] = record
+
+	stream := record.getOrCreateStream(9, arq.Config{}, nil, nil)
+	if stream == nil {
+		t.Fatal("expected stream to be created")
+	}
+	if !stream.PushTXPacket(Enums.DefaultPacketPriority(Enums.PACKET_STREAM_RST_ACK), Enums.PACKET_STREAM_RST_ACK, 55, 0, 0, 0, 0, nil) {
+		t.Fatal("expected initial RST_ACK to be queued on stream")
+	}
+	if !stream.PushTXPacket(Enums.DefaultPacketPriority(Enums.PACKET_STREAM_DATA), Enums.PACKET_STREAM_DATA, 77, 0, 0, 0, 0, []byte("stale")) {
+		t.Fatal("expected stale data to be queued")
+	}
+
+	packet := VpnProto.Packet{
+		SessionID:      record.ID,
+		SessionCookie:  record.Cookie,
+		PacketType:     Enums.PACKET_STREAM_RST,
+		StreamID:       9,
+		HasStreamID:    true,
+		SequenceNum:    55,
+		HasSequenceNum: true,
+	}
+
+	if !s.handleStreamRSTRequest(packet) {
+		t.Fatal("expected RST request to be handled")
+	}
+
+	if stream.TXQueue.Size() != 0 {
+		t.Fatalf("expected stream TX queue to be cleared, got %d", stream.TXQueue.Size())
+	}
+
+	record.StreamsMu.RLock()
+	for _, id := range record.ActiveStreams {
+		if id == 9 {
+			record.StreamsMu.RUnlock()
+			t.Fatal("expected stream to be deactivated after RST")
+		}
+	}
+	record.StreamsMu.RUnlock()
+
+	key := orphanResetKey(Enums.PACKET_STREAM_RST_ACK, 9)
+	ackPkt, ok := record.OrphanQueue.Get(key)
+	if !ok {
+		t.Fatal("expected RST_ACK to be preserved in orphan queue")
+	}
+	if ackPkt.PacketType != Enums.PACKET_STREAM_RST_ACK || ackPkt.SequenceNum != 55 {
+		t.Fatalf("unexpected orphan RST_ACK packet: %+v", ackPkt)
+	}
+}

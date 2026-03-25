@@ -969,18 +969,45 @@ func (a *ARQ) writeLoop() {
 			}
 
 			for _, chunk := range toWrite {
+
 				a.writeLock.Lock()
 				_, err := conn.Write(chunk)
 				a.writeLock.Unlock()
 
 				if err != nil {
-					// Maybe we can later do drain before sending RST if thats server not client
+					if a.isGracefulCloseInProgress() {
+						return
+					}
 					a.Close("Local App Closed Connection (writer closed)", CloseOptions{SendRST: true})
 					return
 				}
 			}
 		}
 	}
+}
+
+func (a *ARQ) isGracefulCloseInProgress() bool {
+	a.mu.Lock()
+	defer a.mu.Unlock()
+
+	if a.closed {
+		return true
+	}
+
+	if a.waitingAck && a.waitingAckFor == Enums.PACKET_STREAM_FIN {
+		return true
+	}
+
+	if a.deferredClose && a.deferredPacket == Enums.PACKET_STREAM_FIN {
+		return true
+	}
+
+	switch a.state {
+	case StateHalfClosedLocal, StateHalfClosedRemote, StateClosing, StateDraining, StateTimeWait:
+		return true
+	}
+
+	return a.finSent || a.finReceived
 }
 
 // ReceiveAck resolves inbound STREAM_DATA_ACK and frees SEND_WINDOW backpressure buffer slots.

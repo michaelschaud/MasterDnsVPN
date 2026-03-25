@@ -470,6 +470,112 @@ func TestARQ_GracefulClose(t *testing.T) {
 	}
 }
 
+func TestARQ_PeerFinHalfCloseStillAcceptsInboundData(t *testing.T) {
+	enqueuer := NewMockPacketEnqueuer()
+	cfg := Config{
+		WindowSize:               100,
+		RTO:                      0.1,
+		MaxRTO:                   0.5,
+		EnableControlReliability: true,
+	}
+
+	localApp, arqConn := net.Pipe()
+	defer localApp.Close()
+	defer arqConn.Close()
+
+	a := NewARQ(1, 1, enqueuer, arqConn, 1000, &testLogger{t}, cfg)
+	a.Start()
+	defer a.Close("test end", CloseOptions{Force: true})
+
+	time.Sleep(50 * time.Millisecond)
+
+	a.MarkFinReceived()
+
+	if state := a.State(); state != StateHalfClosedRemote {
+		t.Fatalf("expected half-closed-remote after peer FIN, got %v", state)
+	}
+	if a.IsClosed() {
+		t.Fatal("stream should not close immediately after peer FIN")
+	}
+
+	payload := []byte("peer data after fin")
+	a.ReceiveData(0, payload)
+
+	select {
+	case p := <-enqueuer.Packets:
+		if p.packetType != Enums.PACKET_STREAM_DATA_ACK {
+			t.Fatalf("expected STREAM_DATA_ACK after inbound data, got %d", p.packetType)
+		}
+	case <-time.After(500 * time.Millisecond):
+		t.Fatal("timed out waiting for STREAM_DATA_ACK")
+	}
+
+	buf := make([]byte, 128)
+	_ = localApp.SetReadDeadline(time.Now().Add(500 * time.Millisecond))
+	n, err := localApp.Read(buf)
+	if err != nil {
+		t.Fatalf("failed to read forwarded inbound data: %v", err)
+	}
+	if !bytes.Equal(buf[:n], payload) {
+		t.Fatalf("expected payload %q, got %q", payload, buf[:n])
+	}
+}
+
+func TestARQ_PeerFinThenLocalFinAckClosesWithoutRST(t *testing.T) {
+	enqueuer := NewMockPacketEnqueuer()
+	cfg := Config{
+		WindowSize:               100,
+		RTO:                      0.1,
+		MaxRTO:                   0.5,
+		EnableControlReliability: true,
+	}
+
+	a := NewARQ(1, 1, enqueuer, nil, 1000, &testLogger{t}, cfg)
+
+	a.MarkFinReceived()
+	if state := a.State(); state != StateHalfClosedRemote {
+		t.Fatalf("expected half-closed-remote after peer FIN, got %v", state)
+	}
+	if a.IsClosed() {
+		t.Fatal("stream should remain open until local FIN path completes")
+	}
+
+	a.Close("local graceful close after peer fin", CloseOptions{SendFIN: true})
+
+	select {
+	case p := <-enqueuer.Packets:
+		if p.packetType != Enums.PACKET_STREAM_FIN {
+			t.Fatalf("expected STREAM_FIN, got %d", p.packetType)
+		}
+	case <-time.After(500 * time.Millisecond):
+		t.Fatal("timed out waiting for STREAM_FIN")
+	}
+
+	if a.IsClosed() {
+		t.Fatal("stream should not close before FIN is acknowledged")
+	}
+
+	a.HandleAckPacket(Enums.PACKET_STREAM_FIN_ACK, 0, 0)
+
+	select {
+	case <-a.Done():
+	case <-time.After(500 * time.Millisecond):
+		t.Fatal("expected stream to close after peer FIN and local FIN_ACK")
+	}
+
+	if state := a.State(); state != StateTimeWait {
+		t.Fatalf("expected TIME_WAIT after graceful FIN handshake, got %v", state)
+	}
+
+	select {
+	case p := <-enqueuer.Packets:
+		if p.packetType == Enums.PACKET_STREAM_RST {
+			t.Fatal("did not expect STREAM_RST during graceful FIN handshake")
+		}
+	default:
+	}
+}
+
 func TestARQ_Reset(t *testing.T) {
 	enqueuer := NewMockPacketEnqueuer()
 	cfg := Config{

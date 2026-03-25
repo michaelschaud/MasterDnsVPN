@@ -4,20 +4,21 @@ import (
 	"context"
 	"math"
 	"slices"
+	"sort"
 	"time"
 
 	"masterdnsvpn-go/internal/logger"
 )
 
 type resolverHealthEvent struct {
-	At      time.Time
-	Success bool
+	At time.Time
 }
 
 type resolverHealthState struct {
 	Events           []resolverHealthEvent
-	SuccessCount     int
 	TimeoutOnlySince time.Time
+	LastDebugAt      time.Time
+	LastSuccessAt    time.Time
 }
 
 type resolverRecheckState struct {
@@ -174,31 +175,25 @@ func (c *Client) recordResolverHealthEvent(serverKey string, success bool, now t
 		state = &resolverHealthState{Events: make([]resolverHealthEvent, 0, 8)}
 		c.resolverHealth[serverKey] = state
 	}
-	state.Events = append(state.Events, resolverHealthEvent{At: now, Success: success})
-	slices.SortFunc(state.Events, func(a, b resolverHealthEvent) int {
-		if a.At.Before(b.At) {
-			return -1
-		}
-		if a.At.After(b.At) {
-			return 1
-		}
-		return 0
-	})
 	if success {
-		state.SuccessCount++
-	} else if state.TimeoutOnlySince.IsZero() || now.Before(state.TimeoutOnlySince) {
+		state.Events = state.Events[:0]
+		state.TimeoutOnlySince = time.Time{}
+		state.LastSuccessAt = now
+		return
+	}
+
+	c.insertResolverHealthEventLocked(state, resolverHealthEvent{At: now})
+	if state.TimeoutOnlySince.IsZero() || now.Before(state.TimeoutOnlySince) {
 		state.TimeoutOnlySince = now
 	}
 	c.pruneResolverHealthLocked(state, now)
-	if state.SuccessCount > 0 {
-		state.TimeoutOnlySince = time.Time{}
-	} else if len(state.Events) == 0 {
+	if len(state.Events) == 0 {
 		state.TimeoutOnlySince = time.Time{}
 	} else if state.TimeoutOnlySince.IsZero() {
 		state.TimeoutOnlySince = state.Events[0].At
 	}
 
-	if !success && c.resolverHealthDebugEnabled() {
+	if c.resolverHealthDebugEnabled() && c.shouldLogResolverTimeoutLocked(state, now) {
 		span := time.Duration(0)
 		if len(state.Events) >= 2 {
 			span = state.Events[len(state.Events)-1].At.Sub(state.Events[0].At)
@@ -212,11 +207,82 @@ func (c *Client) recordResolverHealthEvent(serverKey string, success bool, now t
 			"\U0001F4C9 <cyan>Resolver timeout observed</cyan> <magenta>|</magenta> <blue>Resolver</blue>: <cyan>%s</cyan> <magenta>|</magenta> <blue>Events</blue>: <cyan>%d</cyan> <magenta>|</magenta> <blue>Successes</blue>: <cyan>%d</cyan> <magenta>|</magenta> <blue>Span</blue>: <cyan>%s</cyan> <magenta>|</magenta> <blue>OldestAge</blue>: <cyan>%s</cyan> <magenta>|</magenta> <blue>TimeoutOnlyAge</blue>: <cyan>%s</cyan>",
 			serverKey,
 			len(state.Events),
-			state.SuccessCount,
+			boolToInt(!state.LastSuccessAt.IsZero() && now.Sub(state.LastSuccessAt) <= c.autoDisableTimeoutWindow()),
 			span.Round(time.Millisecond),
 			oldestAge.Round(time.Millisecond),
 			timeoutOnlyAge.Round(time.Millisecond),
 		)
+		state.LastDebugAt = now
+	}
+}
+
+func (c *Client) insertResolverHealthEventLocked(state *resolverHealthState, event resolverHealthEvent) {
+	if state == nil {
+		return
+	}
+	n := len(state.Events)
+	if n == 0 || !event.At.Before(state.Events[n-1].At) {
+		state.Events = append(state.Events, event)
+		return
+	}
+
+	insertAt := sort.Search(n, func(i int) bool {
+		return !state.Events[i].At.Before(event.At)
+	})
+	state.Events = append(state.Events, resolverHealthEvent{})
+	copy(state.Events[insertAt+1:], state.Events[insertAt:])
+	state.Events[insertAt] = event
+}
+
+func (c *Client) shouldLogResolverTimeoutLocked(state *resolverHealthState, now time.Time) bool {
+	if state == nil {
+		return false
+	}
+	if state.LastDebugAt.IsZero() {
+		return true
+	}
+	if now.Sub(state.LastDebugAt) >= 500*time.Millisecond {
+		return true
+	}
+	if len(state.Events) <= 3 {
+		return true
+	}
+	if !state.TimeoutOnlySince.IsZero() && now.Sub(state.TimeoutOnlySince) >= c.autoDisableTimeoutWindow() {
+		return true
+	}
+	return false
+}
+
+func (c *Client) retractResolverTimeoutEvent(serverKey string, timedOutAt time.Time, now time.Time) {
+	if c == nil || serverKey == "" || timedOutAt.IsZero() {
+		return
+	}
+
+	c.resolverHealthMu.Lock()
+	defer c.resolverHealthMu.Unlock()
+
+	state := c.resolverHealth[serverKey]
+	if state == nil || len(state.Events) == 0 {
+		return
+	}
+
+	removeIdx := -1
+	for i, event := range state.Events {
+		if event.At.Equal(timedOutAt) {
+			removeIdx = i
+			break
+		}
+	}
+	if removeIdx == -1 {
+		return
+	}
+
+	state.Events = append(state.Events[:removeIdx], state.Events[removeIdx+1:]...)
+	c.pruneResolverHealthLocked(state, now)
+	if len(state.Events) == 0 {
+		state.TimeoutOnlySince = time.Time{}
+	} else {
+		state.TimeoutOnlySince = state.Events[0].At
 	}
 }
 
@@ -226,19 +292,11 @@ func (c *Client) pruneResolverHealthLocked(state *resolverHealthState, now time.
 	}
 	cutoff := now.Add(-c.autoDisableTimeoutWindow())
 	dropCount := 0
-	droppedSuccess := 0
 	for dropCount < len(state.Events) && state.Events[dropCount].At.Before(cutoff) {
-		if state.Events[dropCount].Success {
-			droppedSuccess++
-		}
 		dropCount++
 	}
 	if dropCount == 0 {
 		return
-	}
-	state.SuccessCount -= droppedSuccess
-	if state.SuccessCount < 0 {
-		state.SuccessCount = 0
 	}
 	state.Events = append(state.Events[:0], state.Events[dropCount:]...)
 }
@@ -261,9 +319,6 @@ func (c *Client) runResolverAutoDisable(now time.Time) {
 		}
 		c.pruneResolverHealthLocked(state, now)
 		if len(state.Events) < c.autoDisableMinObservations() {
-			continue
-		}
-		if state.SuccessCount != 0 {
 			continue
 		}
 		if state.TimeoutOnlySince.IsZero() {
@@ -302,7 +357,7 @@ func (c *Client) disableResolverConnection(serverKey string, cause string) bool 
 		return false
 	}
 	conn := c.connectionPtrByKey(serverKey)
-	if conn == nil || !conn.IsValid || c.balancer.ValidCount() <= 1 {
+	if conn == nil || !conn.IsValid || c.balancer.ValidCount() <= 3 {
 		return false
 	}
 	if !c.balancer.SetConnectionValidity(serverKey, false) {
@@ -635,4 +690,11 @@ func maxDuration(a, b time.Duration) time.Duration {
 		return a
 	}
 	return b
+}
+
+func boolToInt(v bool) int {
+	if v {
+		return 1
+	}
+	return 0
 }

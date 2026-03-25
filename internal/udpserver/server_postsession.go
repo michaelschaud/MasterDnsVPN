@@ -105,6 +105,10 @@ func (s *Server) consumeInboundStreamAck(vpnPacket VpnProto.Packet, stream *Stre
 
 	if _, ok := Enums.GetPacketCloseStream(vpnPacket.PacketType); handledAck && ok {
 		if stream.ARQ.IsClosed() {
+			stream.ClearTXQueue()
+			if record, exists := s.sessions.Get(vpnPacket.SessionID); exists && record != nil {
+				record.deactivateStream(vpnPacket.StreamID)
+			}
 			stream.mu.Lock()
 			stream.Status = "CLOSED"
 			if stream.CloseTime.IsZero() {
@@ -407,6 +411,14 @@ func (s *Server) handleStreamRSTRequest(vpnPacket VpnProto.Packet) bool {
 	now := time.Now()
 	stream, ok := record.getStream(vpnPacket.StreamID)
 	if ok && stream != nil {
+		record.enqueueOrphanReset(Enums.PACKET_STREAM_RST_ACK, vpnPacket.StreamID, vpnPacket.SequenceNum)
+		if stream.ARQ != nil && stream.ARQ.IsClosed() {
+			stream.ClearTXQueue()
+			record.deactivateStream(vpnPacket.StreamID)
+			return true
+		}
+		stream.ClearTXQueue()
+		record.deactivateStream(vpnPacket.StreamID)
 		stream.ARQ.MarkRstReceived()
 		stream.ARQ.Close("peer reset before/while connect", arq.CloseOptions{Force: true})
 		stream.mu.Lock()
@@ -414,6 +426,7 @@ func (s *Server) handleStreamRSTRequest(vpnPacket VpnProto.Packet) bool {
 		stream.CloseTime = now
 		stream.mu.Unlock()
 	} else {
+		record.enqueueOrphanReset(Enums.PACKET_STREAM_RST_ACK, vpnPacket.StreamID, vpnPacket.SequenceNum)
 		record.noteStreamClosed(vpnPacket.StreamID, now)
 	}
 

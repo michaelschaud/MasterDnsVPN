@@ -684,16 +684,29 @@ func (r *sessionRecord) removeStream(streamID uint16, now time.Time) {
 	r.StreamsMu.Lock()
 	delete(r.Streams, streamID)
 
-	// Remove from ActiveStreams
+	r.removeActiveStreamLocked(streamID)
+	r.StreamsMu.Unlock()
+
+	r.noteStreamClosed(streamID, now)
+}
+
+func (r *sessionRecord) deactivateStream(streamID uint16) {
+	if r == nil || streamID == 0 {
+		return
+	}
+
+	r.StreamsMu.Lock()
+	r.removeActiveStreamLocked(streamID)
+	r.StreamsMu.Unlock()
+}
+
+func (r *sessionRecord) removeActiveStreamLocked(streamID uint16) {
 	for i, id := range r.ActiveStreams {
 		if id == streamID {
 			r.ActiveStreams = append(r.ActiveStreams[:i], r.ActiveStreams[i+1:]...)
 			break
 		}
 	}
-	r.StreamsMu.Unlock()
-
-	r.noteStreamClosed(streamID, now)
 }
 
 func (r *sessionRecord) closeAllStreams(reason string) {

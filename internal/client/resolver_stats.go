@@ -107,6 +107,10 @@ func (c *Client) trackResolverSuccess(packet []byte, addr *net.UDPAddr, received
 		return
 	}
 
+	if sample.timedOut && !sample.timedOutAt.IsZero() {
+		c.retractResolverTimeoutEvent(sample.serverKey, sample.timedOutAt, receivedAt)
+	}
+
 	c.noteResolverSuccess(sample.serverKey, receivedAt.Sub(sample.sentAt))
 }
 

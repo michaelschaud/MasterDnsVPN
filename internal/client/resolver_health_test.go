@@ -2,6 +2,7 @@ package client
 
 import (
 	"context"
+	"net"
 	"testing"
 	"time"
 
@@ -107,7 +108,7 @@ func TestDisableResolverClearsPreferredStreamResolverReferences(t *testing.T) {
 		AutoDisableTimeoutServers:       true,
 		AutoDisableTimeoutWindowSeconds: 10.0,
 		AutoDisableMinObservations:      3,
-	}, "a", "b")
+	}, "a", "b", "c", "d")
 	c.initResolverRecheckMeta()
 
 	streamA := testStream(21)
@@ -141,7 +142,7 @@ func TestResetRuntimeBindingsPreservesResolverHealthState(t *testing.T) {
 		AutoDisableTimeoutServers:      true,
 		RecheckInactiveIntervalSeconds: 60.0,
 		RecheckServerIntervalSeconds:   3.0,
-	}, "a", "b")
+	}, "a", "b", "c", "d")
 	c.successMTUChecks = true
 	c.syncedUploadMTU = 120
 	c.syncedDownloadMTU = 180
@@ -178,6 +179,49 @@ func TestResetRuntimeBindingsPreservesResolverHealthState(t *testing.T) {
 
 	if len(c.active_streams) != 0 {
 		t.Fatalf("expected streams to be cleared by runtime reset, got=%d", len(c.active_streams))
+	}
+}
+
+func TestLateResolverSuccessRetractsPriorTimeoutEvent(t *testing.T) {
+	c := buildTestClientWithResolvers(config.ClientConfig{
+		AutoDisableTimeoutServers:       true,
+		AutoDisableTimeoutWindowSeconds: 3.0,
+		AutoDisableCheckIntervalSeconds: 3.0,
+		TunnelPacketTimeoutSec:          10.0,
+	}, "a", "b", "c", "d")
+	c.initResolverRecheckMeta()
+
+	sentAt := time.Date(2026, 3, 26, 1, 44, 50, 0, time.UTC)
+	timeoutAt := sentAt.Add(3 * time.Second)
+	receivedAt := timeoutAt.Add(400 * time.Millisecond)
+
+	key := resolverSampleKey{
+		resolverAddr: "127.0.0.1:5350",
+		dnsID:        77,
+	}
+	c.resolverPending[key] = resolverSample{
+		serverKey: "a",
+		sentAt:    sentAt,
+	}
+
+	c.collectExpiredResolverTimeouts(timeoutAt)
+	c.trackResolverSuccess([]byte{0x00, 0x4d}, &net.UDPAddr{IP: net.ParseIP("127.0.0.1"), Port: 5350}, receivedAt)
+
+	c.resolverHealthMu.Lock()
+	state := c.resolverHealth["a"]
+	c.resolverHealthMu.Unlock()
+
+	if state == nil {
+		t.Fatal("expected resolver health state to exist")
+	}
+	if len(state.Events) != 0 {
+		t.Fatalf("expected timeout streak to be cleared after late success, got %d events", len(state.Events))
+	}
+	if !state.TimeoutOnlySince.IsZero() {
+		t.Fatal("expected timeout-only streak to be cleared after late success")
+	}
+	if state.LastSuccessAt.IsZero() {
+		t.Fatal("expected late success timestamp to be recorded")
 	}
 }
 
@@ -322,5 +366,32 @@ func TestResolverAutoDisableStopsAtThreeValidResolvers(t *testing.T) {
 	valid := c.balancer.ValidCount()
 	if valid != 3 {
 		t.Fatalf("expected no resolver to be disabled at the floor, got valid=%d", valid)
+	}
+}
+
+func TestResolverHealthSuccessClearsTimeoutHistory(t *testing.T) {
+	c := buildTestClientWithResolvers(config.ClientConfig{
+		AutoDisableTimeoutServers:       true,
+		AutoDisableTimeoutWindowSeconds: 3.0,
+	}, "a", "b", "c", "d")
+	c.initResolverRecheckMeta()
+
+	base := time.Date(2026, 3, 26, 2, 0, 0, 0, time.UTC)
+	c.recordResolverHealthEvent("a", true, base.Add(2*time.Second))
+	c.recordResolverHealthEvent("a", false, base)
+	c.recordResolverHealthEvent("a", true, base.Add(3*time.Second))
+
+	c.resolverHealthMu.Lock()
+	state := c.resolverHealth["a"]
+	c.resolverHealthMu.Unlock()
+
+	if state == nil {
+		t.Fatal("expected resolver health state to exist")
+	}
+	if len(state.Events) != 0 {
+		t.Fatalf("expected success to clear timeout history, got %d events", len(state.Events))
+	}
+	if state.LastSuccessAt != base.Add(3*time.Second) {
+		t.Fatalf("unexpected last success timestamp: got=%s want=%s", state.LastSuccessAt, base.Add(3*time.Second))
 	}
 }

@@ -144,6 +144,18 @@ func (s *Stream_server) RemoveQueuedData(sequenceNum uint16) bool {
 	return removedAny
 }
 
+func (s *Stream_server) ClearTXQueue() {
+	if s == nil || s.TXQueue == nil {
+		return
+	}
+
+	s.txQueueMu.Lock()
+	s.TXQueue.Clear(func(pkt *serverStreamTXPacket) {
+		putTXPacketToPool(pkt)
+	})
+	s.txQueueMu.Unlock()
+}
+
 func (s *Stream_server) Abort(reason string) {
 	s.CloseStream(true, 0, reason)
 }
@@ -158,11 +170,7 @@ func (s *Stream_server) cleanupResources() {
 		_ = s.UpstreamConn.Close()
 		s.UpstreamConn = nil
 	}
-	if s.TXQueue != nil {
-		s.TXQueue.Clear(func(pkt *serverStreamTXPacket) {
-			putTXPacketToPool(pkt)
-		})
-	}
+	s.ClearTXQueue()
 }
 
 func (s *Stream_server) CloseStream(force bool, ttl time.Duration, reason string) {

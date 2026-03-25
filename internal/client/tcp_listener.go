@@ -39,9 +39,9 @@ func (l *TCPListener) Start(ctx context.Context, ip string, port int) error {
 
 	l.client.log.Infof("🚀 <green>%s Proxy server is listening on <cyan>%s</cyan></green>", l.protocolType, addr)
 
-	go func() {
+	go func(activeListener net.Listener) {
 		for {
-			conn, err := l.listener.Accept()
+			conn, err := activeListener.Accept()
 			if err != nil {
 				select {
 				case <-l.stopChan:
@@ -54,7 +54,7 @@ func (l *TCPListener) Start(ctx context.Context, ip string, port int) error {
 			}
 			go l.handleConnection(ctx, conn, l.protocolType)
 		}
-	}()
+	}(listener)
 
 	return nil
 }

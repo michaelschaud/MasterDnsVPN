@@ -302,6 +302,11 @@ func (s *Server) dequeueSessionResponse(sessionID uint8, now time.Time) (*VpnPro
 			if stream == nil || stream.TXQueue == nil {
 				continue
 			}
+			if stream.ARQ != nil && stream.ARQ.IsClosed() {
+				stream.ClearTXQueue()
+				record.deactivateStream(uint16(id))
+				continue
+			}
 			var popped *serverStreamTXPacket
 			popped, _, ok = stream.TXQueue.Pop(func(p *serverStreamTXPacket) uint64 {
 				return Enums.PacketIdentityKey(uint16(id), p.PacketType, p.SequenceNum, p.FragmentID)
