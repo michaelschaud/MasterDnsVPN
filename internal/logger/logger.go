@@ -215,11 +215,7 @@ func shouldUseColor() bool {
 	if strings.TrimSpace(os.Getenv("FORCE_COLOR")) != "" {
 		return true
 	}
-	info, err := os.Stdout.Stat()
-	if err != nil {
-		return false
-	}
-	return (info.Mode() & os.ModeCharDevice) != 0
+	return detectColorSupport(os.Stdout)
 }
 
 func renderColorTags(text string) string {

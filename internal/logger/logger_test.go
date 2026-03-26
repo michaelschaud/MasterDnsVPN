@@ -9,6 +9,7 @@ package logger
 
 import (
 	"bytes"
+	"os"
 	"strings"
 	"testing"
 )
@@ -74,5 +75,21 @@ func TestLoggerSuppressesBelowLevel(t *testing.T) {
 	}
 	if !strings.Contains(output, "warn message") {
 		t.Fatal("warn message should be logged at WARN level")
+	}
+}
+
+func TestShouldUseColorHonorsNoColor(t *testing.T) {
+	oldNoColor := os.Getenv("NO_COLOR")
+	oldForceColor := os.Getenv("FORCE_COLOR")
+	t.Cleanup(func() {
+		_ = os.Setenv("NO_COLOR", oldNoColor)
+		_ = os.Setenv("FORCE_COLOR", oldForceColor)
+	})
+
+	_ = os.Setenv("FORCE_COLOR", "1")
+	_ = os.Setenv("NO_COLOR", "1")
+
+	if shouldUseColor() {
+		t.Fatal("NO_COLOR should disable colors even when FORCE_COLOR is set")
 	}
 }
