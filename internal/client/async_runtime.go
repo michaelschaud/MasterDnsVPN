@@ -509,6 +509,7 @@ func (c *Client) handleInboundPacket(data []byte, addr *net.UDPAddr) {
 	// 1. Extract VPN Packet from DNS Response
 	vpnPacket, err := DnsParser.ExtractVPNResponse(data, c.responseMode == mtuProbeBase64Reply)
 	if err != nil {
+		c.log.Debugf("\U0001F6A8 <red>Failed to parse VPN packet from DNS response: %v from %v</red>", err, addr)
 		if errors.Is(err, DnsParser.ErrTXTAnswerMissing) {
 			receivedAt := time.Now()
 			// summary := DnsParser.DescribeResponseWithoutTunnelPayload(data)
@@ -520,7 +521,6 @@ func (c *Client) handleInboundPacket(data []byte, addr *net.UDPAddr) {
 			// c.log.Debugf("DNS response from %v had no tunnel TXT payload | %s", addr, summary)
 			return
 		}
-		// c.log.Warnf("\U0001F6A8 <red>Failed to parse VPN packet from DNS response: %v from %v</red>", err, addr)
 		return
 	}
 

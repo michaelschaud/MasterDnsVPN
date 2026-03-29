@@ -973,11 +973,19 @@ func (a *ARQ) ioLoop() {
 			}
 			a.mu.Unlock()
 
-			a.enqueuer.PushTXPacket(
+			ok := a.enqueuer.PushTXPacket(
 				Enums.DefaultPacketPriority(Enums.PACKET_STREAM_DATA),
 				Enums.PACKET_STREAM_DATA,
 				sn, 0, 0, a.compressionType, 0, raw,
 			)
+			if !ok {
+				a.mu.Lock()
+				if info, exists := a.sndBuf[sn]; exists {
+					info.Dispatched = true
+					info.LastSentAt = time.Now()
+				}
+				a.mu.Unlock()
+			}
 		}
 
 		if err != nil {
@@ -1644,13 +1652,9 @@ func (a *ARQ) clearSentDataNack(sn uint16) {
 func (a *ARQ) SendControlPacketWithTTL(packetType uint8, sequenceNum uint16, fragmentID uint8, totalFragments uint8, payload []byte, priority int, trackForAck bool, customAckType *uint8, ttl time.Duration) bool {
 	copyData := append([]byte(nil), payload...)
 	priority = Enums.NormalizePacketPriority(packetType, priority)
-	ok := a.enqueuer.PushTXPacket(priority, packetType, sequenceNum, fragmentID, totalFragments, 0, ttl, copyData)
-	if !ok {
-		return false
-	}
 
 	if !a.enableControlReliability || !trackForAck {
-		return true
+		return a.enqueuer.PushTXPacket(priority, packetType, sequenceNum, fragmentID, totalFragments, 0, ttl, copyData)
 	}
 
 	var expectedAck uint8
@@ -1664,7 +1668,6 @@ func (a *ARQ) SendControlPacketWithTTL(packetType uint8, sequenceNum uint16, fra
 		expectedAck = val
 	}
 
-	// Key: [8bit PacketType][16bit SequenceNum][8bit FragmentID]
 	key := uint32(packetType)<<24 | uint32(sequenceNum)<<8 | uint32(fragmentID)
 	now := time.Now()
 
@@ -1682,6 +1685,15 @@ func (a *ARQ) SendControlPacketWithTTL(packetType uint8, sequenceNum uint16, fra
 		}
 	}
 
+	ok := a.enqueuer.PushTXPacket(priority, packetType, sequenceNum, fragmentID, totalFragments, 0, ttl, copyData)
+
+	dispatchedFlag := false
+	lastSentAt := time.Time{}
+	if !ok {
+		dispatchedFlag = true
+		lastSentAt = now
+	}
+
 	a.controlSndBuf[key] = &arqControlItem{
 		PacketType:     packetType,
 		SequenceNum:    sequenceNum,
@@ -1691,15 +1703,15 @@ func (a *ARQ) SendControlPacketWithTTL(packetType uint8, sequenceNum uint16, fra
 		Payload:        copyData,
 		Priority:       priority,
 		CreatedAt:      now,
-		LastSentAt:     time.Time{},
-		Dispatched:     false,
+		LastSentAt:     lastSentAt,
+		Dispatched:     dispatchedFlag,
 		Retries:        0,
 		CurrentRTO:     initialRTO,
 		SampleEligible: true,
 		TTL:            ttl,
 	}
 
-	return true
+	return ok
 }
 
 func (a *ARQ) handleTrackedPacketTTLExpiry(packetType uint8, reason string) {

@@ -117,7 +117,7 @@ PACKET_DUPLICATION_COUNT = 2
 
 # Duplicate stream setup packets (STREAM_SYN / SOCKS5_SYN) this many times.
 # Clamped in code to [PACKET_DUPLICATION_COUNT, 8].
-SETUP_PACKET_DUPLICATION_COUNT = 2
+SETUP_PACKET_DUPLICATION_COUNT = 3
 
 # Stream-aware resolver failover.
 # If a stream keeps resending on the same preferred resolver, it can move.
