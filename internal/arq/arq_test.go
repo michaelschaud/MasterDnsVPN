@@ -1015,18 +1015,17 @@ func TestARQ_OutOfOrderReceive(t *testing.T) {
 	a.ReceiveData(0, []byte("packet 0"))
 	<-enqueuer.Packets // ACK for 0
 
-	// Now everything should be readable in order
-	expected := [][]byte{[]byte("packet 0"), []byte("packet 1"), []byte("packet 2")}
-	for _, exp := range expected {
-		buf := make([]byte, 100)
-		_ = localApp.SetReadDeadline(time.Now().Add(500 * time.Millisecond))
-		n, err := localApp.Read(buf)
-		if err != nil {
-			t.Fatalf("failed to read from local app: %v", err)
-		}
-		if !bytes.Equal(buf[:n], exp) {
-			t.Errorf("expected %s, got %s", string(exp), string(buf[:n]))
-		}
+	// Now everything should be readable in-order as a byte stream. A stream
+	// transport does not preserve per-Write read boundaries, so a single Read
+	// may contain one or more contiguous packets after write coalescing.
+	expected := []byte("packet 0packet 1packet 2")
+	buf := make([]byte, len(expected))
+	_ = localApp.SetReadDeadline(time.Now().Add(500 * time.Millisecond))
+	if _, err := io.ReadFull(localApp, buf); err != nil {
+		t.Fatalf("failed to read full ordered payload from local app: %v", err)
+	}
+	if !bytes.Equal(buf, expected) {
+		t.Errorf("expected %s, got %s", string(expected), string(buf))
 	}
 }
 
