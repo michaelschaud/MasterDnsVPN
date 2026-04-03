@@ -347,12 +347,32 @@ func (c *Client) handleSOCKSConnect(ctx context.Context, conn net.Conn, addr str
 	targetPayload = append(targetPayload, atyp)
 	switch atyp {
 	case SOCKS5_ATYP_IPV4:
-		targetPayload = append(targetPayload, net.ParseIP(addr).To4()...)
+		ip4 := net.ParseIP(addr).To4()
+		if ip4 == nil {
+			if socksVersion == SOCKS4_VERSION {
+				_ = c.sendSocks4Reply(conn, false)
+			} else {
+				_ = c.sendSocksReply(conn, SOCKS5_REPLY_HOST_UNREACHABLE, SOCKS5_ATYP_IPV4, net.IPv4zero, 0)
+			}
+			_ = conn.Close()
+			return
+		}
+		targetPayload = append(targetPayload, ip4...)
 	case SOCKS5_ATYP_DOMAIN:
 		targetPayload = append(targetPayload, byte(len(addr)))
 		targetPayload = append(targetPayload, []byte(addr)...)
 	case SOCKS5_ATYP_IPV6:
-		targetPayload = append(targetPayload, net.ParseIP(addr).To16()...)
+		ip6 := net.ParseIP(addr).To16()
+		if ip6 == nil {
+			if socksVersion == SOCKS4_VERSION {
+				_ = c.sendSocks4Reply(conn, false)
+			} else {
+				_ = c.sendSocksReply(conn, SOCKS5_REPLY_HOST_UNREACHABLE, SOCKS5_ATYP_IPV4, net.IPv4zero, 0)
+			}
+			_ = conn.Close()
+			return
+		}
+		targetPayload = append(targetPayload, ip6...)
 	}
 
 	pBuf := make([]byte, 2)
