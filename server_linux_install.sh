@@ -455,6 +455,9 @@ net.core.wmem_max = 33554432
 net.ipv4.udp_rmem_min = 16384
 net.ipv4.udp_wmem_min = 16384
 net.ipv4.udp_mem = 65536 131072 262144
+net.netfilter.nf_conntrack_max = 262144
+net.netfilter.nf_conntrack_udp_timeout = 15
+net.netfilter.nf_conntrack_udp_timeout_stream = 60
 net.ipv4.ip_local_port_range = 10240 65535
 EOF
 sysctl --system >/dev/null 2>&1 || log_warn "Could not fully apply sysctl settings."
