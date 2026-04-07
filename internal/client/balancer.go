@@ -278,8 +278,8 @@ func (b *Balancer) ReportSuccessWindow(serverKey string, now time.Time, window t
 		b.ReportSuccess(serverKey, rtt)
 	}
 
-	b.mu.RLock()
-	defer b.mu.RUnlock()
+	b.mu.Lock()
+	defer b.mu.Unlock()
 
 	conn, ok := b.connectionByKeyLocked(serverKey)
 	return ok && conn.IsValid
@@ -334,6 +334,22 @@ func (b *Balancer) ResetConnectionWindow(serverKey string) bool {
 	}
 
 	b.resetWindowLocked(conn)
+	return true
+}
+
+func (b *Balancer) RetractTimeoutWindow(serverKey string, now time.Time, window time.Duration) bool {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+
+	conn, ok := b.connectionByKeyLocked(serverKey)
+	if !ok {
+		return false
+	}
+
+	b.ensureWindowLocked(conn, now, window)
+	if conn.WindowTimedOut > 0 {
+		conn.WindowTimedOut--
+	}
 	return true
 }
 

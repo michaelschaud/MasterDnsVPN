@@ -48,51 +48,76 @@ func (c *Client) resolverSampleTTL() time.Duration {
 }
 
 func (c *Client) noteResolverSend(serverKey string) {
-	if c == nil || serverKey == "" {
+	if c == nil || c.balancer == nil || serverKey == "" {
 		return
 	}
-	c.runtime.NoteSend(serverKey)
+	now := c.now()
+	window := c.autoDisableTimeoutWindow()
+	c.balancer.ReportSend(serverKey)
+	c.balancer.ReportSendWindow(serverKey, now, window)
 }
 
 func (c *Client) noteResolverSuccess(serverKey string, rtt time.Duration) {
-	if c == nil || serverKey == "" {
+	if c == nil || c.balancer == nil || serverKey == "" {
 		return
 	}
-	c.runtime.NoteSuccess(serverKey, rtt, c.now(), c.autoDisableTimeoutWindow())
+	c.balancer.ReportSuccessWindow(serverKey, c.now(), c.autoDisableTimeoutWindow(), rtt)
 }
 
 func (c *Client) noteResolverTimeout(serverKey string, at time.Time) {
-	if c == nil || serverKey == "" {
+	if c == nil || c.balancer == nil || serverKey == "" {
 		return
 	}
 	if at.IsZero() {
 		at = c.now()
 	}
-	c.runtime.NoteTimeout(serverKey, at, c.autoDisableTimeoutWindow())
+	if !c.cfg.AutoDisableTimeoutServers {
+		return
+	}
+	c.balancer.ReportTimeoutWindow(
+		serverKey,
+		at,
+		c.autoDisableTimeoutWindow(),
+		c.autoDisableMinObservations(),
+		1,
+	)
 }
 
 func (c *Client) noteResolverFailure(serverKey string, at time.Time) {
-	if c == nil || serverKey == "" {
+	if c == nil || c.balancer == nil || serverKey == "" {
 		return
 	}
 	if at.IsZero() {
 		at = c.now()
 	}
-	c.runtime.NoteFailure(serverKey, at, c.autoDisableTimeoutWindow())
+	if !c.cfg.AutoDisableTimeoutServers {
+		return
+	}
+	c.balancer.ReportTimeoutWindow(
+		serverKey,
+		at,
+		c.autoDisableTimeoutWindow(),
+		c.autoDisableMinObservations(),
+		1,
+	)
 }
 
 func (c *Client) recordResolverHealthEvent(serverKey string, success bool, now time.Time) {
 	if c == nil || serverKey == "" {
 		return
 	}
-	c.runtime.RecordHealthEvent(serverKey, success, now, c.autoDisableTimeoutWindow())
+	if success {
+		c.noteResolverSuccess(serverKey, 0)
+		return
+	}
+	c.noteResolverTimeout(serverKey, now)
 }
 
 func (c *Client) retractResolverTimeoutEvent(serverKey string, timedOutAt time.Time, now time.Time) {
-	if c == nil || serverKey == "" || timedOutAt.IsZero() {
+	if c == nil || c.balancer == nil || serverKey == "" || timedOutAt.IsZero() {
 		return
 	}
-	c.runtime.RetractTimeoutEvent(serverKey, timedOutAt, now, c.autoDisableTimeoutWindow())
+	c.balancer.RetractTimeoutWindow(serverKey, now, c.autoDisableTimeoutWindow())
 }
 
 func (c *Client) trackResolverSend(packet []byte, resolverAddr string, localAddr string, serverKey string, sentAt time.Time) {
@@ -213,6 +238,38 @@ func (c *Client) resolverRequestTimeout() time.Duration {
 		timeout = 500 * time.Millisecond
 	}
 	return timeout
+}
+
+func (c *Client) autoDisableTimeoutWindow() time.Duration {
+	if c == nil || !c.cfg.AutoDisableTimeoutServers {
+		return 0
+	}
+	window := time.Duration(c.cfg.AutoDisableTimeoutWindowSeconds * float64(time.Second))
+	if window <= 0 {
+		return 0
+	}
+	return window
+}
+
+func (c *Client) autoDisableCheckInterval() time.Duration {
+	if c == nil || !c.cfg.AutoDisableTimeoutServers {
+		return 0
+	}
+	interval := time.Duration(c.cfg.AutoDisableCheckIntervalSeconds * float64(time.Second))
+	if interval <= 0 {
+		return 0
+	}
+	return interval
+}
+
+func (c *Client) autoDisableMinObservations() int {
+	if c == nil {
+		return 1
+	}
+	if c.cfg.AutoDisableMinObservations < 1 {
+		return 1
+	}
+	return c.cfg.AutoDisableMinObservations
 }
 
 func (c *Client) resolverLateResponseGrace(timeout time.Duration) time.Duration {
