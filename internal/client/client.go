@@ -38,13 +38,13 @@ type Client struct {
 	codec    *security.Codec
 	balancer *Balancer
 
-	successMTUChecks    bool
-	udpBufferPool       sync.Pool
-	resolverConnsMu     sync.Mutex
-	resolverConns       map[string]chan pooledUDPConn
-	resolverAddrMu      sync.RWMutex
-	resolverAddrCache   map[string]*net.UDPAddr
-	nowFn               func() time.Time
+	successMTUChecks  bool
+	udpBufferPool     sync.Pool
+	resolverConnsMu   sync.Mutex
+	resolverConns     map[string]chan pooledUDPConn
+	resolverAddrMu    sync.RWMutex
+	resolverAddrCache map[string]*net.UDPAddr
+	nowFn             func() time.Time
 
 	// MTU States
 	syncedUploadMTU                       int
@@ -276,6 +276,12 @@ func New(cfg config.ClientConfig, log *logger.Logger, codec *security.Codec) *Cl
 	}
 
 	c.balancer.SetStreamFailoverConfig(c.streamResolverFailoverResendThreshold, c.streamResolverFailoverCooldown)
+	c.balancer.SetAutoDisableConfig(
+		cfg.AutoDisableTimeoutServers,
+		time.Duration(cfg.AutoDisableTimeoutWindowSeconds*float64(time.Second)),
+		time.Duration(cfg.AutoDisableCheckIntervalSeconds*float64(time.Second)),
+		cfg.AutoDisableMinObservations,
+	)
 	c.pingManager = newPingManager(c)
 	return c
 }

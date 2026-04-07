@@ -57,7 +57,7 @@ type Stream_client struct {
 	InitialPayload []byte
 	PriorityCounts map[int]int
 
-	HandshakeLastProgress  time.Time
+	HandshakeLastProgress time.Time
 
 	txQueueMu     sync.Mutex
 	statusMu      sync.RWMutex

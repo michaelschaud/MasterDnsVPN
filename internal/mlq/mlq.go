@@ -23,8 +23,8 @@ type PriorityQueue[T any] struct {
 type MultiLevelQueue[T any] struct {
 	mu sync.RWMutex
 
-	queues  [6]PriorityQueue[T]
-	bitmask uint16 // Bit i is 1 if queues[i] is not empty
+	queues   [6]PriorityQueue[T]
+	bitmask  uint16 // Bit i is 1 if queues[i] is not empty
 	fastSize atomic.Int32
 
 	// Global census for O(1) existence and duplicate prevention across all levels

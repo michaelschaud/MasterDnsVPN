@@ -791,8 +791,6 @@ func (c *Client) asyncWriterWorker(ctx context.Context, id int, conn *net.UDPCon
 						frame.serverKey,
 						now,
 						c.tunnelPacketTimeout,
-						c.autoDisableCheckInterval(),
-						c.autoDisableTimeoutWindow(),
 					)
 				}
 			}
@@ -885,9 +883,6 @@ func (c *Client) handleInboundPacket(data []byte, addr *net.UDPAddr, localAddr s
 					addr,
 					localAddr,
 					receivedAt,
-					c.autoDisableTimeoutWindow(),
-					c.autoDisableMinObservations(),
-					c.cfg.AutoDisableTimeoutServers,
 				)
 			} else {
 				c.balancer.TrackResolverSuccess(
@@ -895,7 +890,6 @@ func (c *Client) handleInboundPacket(data []byte, addr *net.UDPAddr, localAddr s
 					addr,
 					localAddr,
 					receivedAt,
-					c.autoDisableTimeoutWindow(),
 					0,
 				)
 			}
@@ -912,7 +906,6 @@ func (c *Client) handleInboundPacket(data []byte, addr *net.UDPAddr, localAddr s
 		addr,
 		localAddr,
 		time.Now(),
-		c.autoDisableTimeoutWindow(),
 		0,
 	)
 	// if c.log != nil && c.log.Enabled(logger.LevelDebug) && vpnPacket.PacketType != Enums.PACKET_PONG {

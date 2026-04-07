@@ -168,10 +168,6 @@ func (c *Client) runResolverHealthLoop(ctx context.Context) {
 		c.balancer.CollectExpiredResolverTimeouts(
 			c.now(),
 			c.tunnelPacketTimeout,
-			c.autoDisableCheckInterval(),
-			c.autoDisableTimeoutWindow(),
-			c.autoDisableMinObservations(),
-			c.cfg.AutoDisableTimeoutServers,
 		)
 
 		if c.cfg.RecheckInactiveServersEnabled {

@@ -46,6 +46,7 @@ type Connection struct {
 }
 
 type balancerStreamRouteState struct {
+	mu                   sync.Mutex
 	PreferredResolverKey string
 	ResendStreak         int
 	LastFailoverAt       time.Time
@@ -82,23 +83,27 @@ type Balancer struct {
 	connections  []Connection
 	indexByKey   map[string]int
 	activeIDs    []int
-	activePos    map[int]int
 	inactiveIDs  []int
-	inactivePos  map[int]int
 	stats        []*connectionStats
 	streamRoutes map[uint16]*balancerStreamRouteState
-	pending      map[balancerResolverSampleKey]balancerResolverSample
+
+	pendingMu sync.Mutex
+	pending   map[balancerResolverSampleKey]balancerResolverSample
 
 	streamFailoverThreshold int
 	streamFailoverCooldown  time.Duration
+
+	autoDisableEnabled         bool
+	autoDisableTimeoutWindow   time.Duration
+	autoDisableCheckInterval   time.Duration
+	autoDisableMinObservations int
 }
 
 type connectionStats struct {
-	mu           sync.RWMutex
-	sent         uint64
-	acked        uint64
-	rttMicrosSum uint64
-	rttCount     uint64
+	sent         atomic.Uint64
+	acked        atomic.Uint64
+	rttMicrosSum atomic.Uint64
+	rttCount     atomic.Uint64
 }
 
 const connectionStatsHalfLifeThreshold = 1000
@@ -132,6 +137,21 @@ func (b *Balancer) SetStreamFailoverConfig(threshold int, cooldown time.Duration
 	b.mu.Unlock()
 }
 
+func (b *Balancer) SetAutoDisableConfig(enabled bool, window time.Duration, interval time.Duration, minObservations int) {
+	if b == nil {
+		return
+	}
+	if minObservations < 1 {
+		minObservations = 1
+	}
+	b.mu.Lock()
+	b.autoDisableEnabled = enabled
+	b.autoDisableTimeoutWindow = window
+	b.autoDisableCheckInterval = interval
+	b.autoDisableMinObservations = minObservations
+	b.mu.Unlock()
+}
+
 func (b *Balancer) SetConnections(connections []*Connection) {
 	b.mu.Lock()
 	defer b.mu.Unlock()
@@ -140,15 +160,16 @@ func (b *Balancer) SetConnections(connections []*Connection) {
 	b.connections = make([]Connection, 0, size)
 	b.indexByKey = make(map[string]int, size)
 	b.activeIDs = make([]int, 0, size)
-	b.activePos = make(map[int]int, size)
 	b.inactiveIDs = make([]int, 0, size)
-	b.inactivePos = make(map[int]int, size)
 	b.stats = make([]*connectionStats, 0, size)
+	b.pendingMu.Lock()
 	if b.pending == nil {
 		b.pending = make(map[balancerResolverSampleKey]balancerResolverSample)
 	} else {
 		clear(b.pending)
 	}
+	b.pendingMu.Unlock()
+
 	if b.streamRoutes == nil {
 		b.streamRoutes = make(map[uint16]*balancerStreamRouteState)
 	} else {
@@ -173,7 +194,6 @@ func (b *Balancer) SetConnections(connections []*Connection) {
 		idx := len(b.connections)
 		b.connections = append(b.connections, copied)
 		b.indexByKey[copied.Key] = idx
-		b.inactivePos[idx] = len(b.inactiveIDs)
 		b.inactiveIDs = append(b.inactiveIDs, idx)
 		b.stats = append(b.stats, &connectionStats{})
 	}
@@ -269,10 +289,8 @@ func (b *Balancer) ApplyMTUProbeResult(key string, uploadBytes int, uploadChars 
 
 func (b *Balancer) ReportSend(serverKey string) {
 	if stats := b.statsForKey(serverKey); stats != nil {
-		stats.mu.Lock()
-		stats.sent++
-		stats.applyHalfLifeLocked()
-		stats.mu.Unlock()
+		stats.sent.Add(1)
+		stats.applyHalfLife()
 	}
 }
 
@@ -282,14 +300,12 @@ func (b *Balancer) ReportSuccess(serverKey string, rtt time.Duration) {
 		return
 	}
 
-	stats.mu.Lock()
-	stats.acked++
+	stats.acked.Add(1)
 	if rtt > 0 {
-		stats.rttMicrosSum += uint64(rtt / time.Microsecond)
-		stats.rttCount++
+		stats.rttMicrosSum.Add(uint64(rtt / time.Microsecond))
+		stats.rttCount.Add(1)
 	}
-	stats.applyHalfLifeLocked()
-	stats.mu.Unlock()
+	stats.applyHalfLife()
 }
 
 func (b *Balancer) ReportTimeoutWindow(serverKey string, now time.Time, window time.Duration, minObservations int, minActive int) bool {
@@ -359,12 +375,15 @@ func (b *Balancer) TrackResolverSend(
 	serverKey string,
 	sentAt time.Time,
 	tunnelPacketTimeout time.Duration,
-	checkInterval time.Duration,
-	window time.Duration,
 ) {
 	if b == nil || len(packet) < 2 || resolverAddr == "" || serverKey == "" {
 		return
 	}
+
+	b.mu.RLock()
+	checkInterval := b.autoDisableCheckInterval
+	window := b.autoDisableTimeoutWindow
+	b.mu.RUnlock()
 
 	key := balancerResolverSampleKey{
 		resolverAddr: resolverAddr,
@@ -376,7 +395,7 @@ func (b *Balancer) TrackResolverSend(
 	ttl := resolverSampleTTL(tunnelPacketTimeout)
 	var timeoutObservations []balancerTimeoutObservation
 
-	b.mu.Lock()
+	b.pendingMu.Lock()
 	if len(b.pending) >= resolverPendingSoftCap {
 		timeoutObservations = b.prunePendingLocked(sentAt, requestTimeout, ttl)
 		if overflow := len(b.pending) - resolverPendingHardCap; overflow >= 0 {
@@ -387,7 +406,7 @@ func (b *Balancer) TrackResolverSend(
 		serverKey: serverKey,
 		sentAt:    sentAt,
 	}
-	b.mu.Unlock()
+	b.pendingMu.Unlock()
 
 	for _, observation := range timeoutObservations {
 		b.ReportTimeoutWindow(observation.serverKey, observation.at, window, 1, 1)
@@ -407,12 +426,15 @@ func (b *Balancer) TrackResolverSuccess(
 	addr *net.UDPAddr,
 	localAddr string,
 	receivedAt time.Time,
-	window time.Duration,
 	rtt time.Duration,
 ) {
 	if b == nil || len(packet) < 2 || addr == nil {
 		return
 	}
+
+	b.mu.RLock()
+	window := b.autoDisableTimeoutWindow
+	b.mu.RUnlock()
 
 	key := balancerResolverSampleKey{
 		resolverAddr: addr.String(),
@@ -420,12 +442,12 @@ func (b *Balancer) TrackResolverSuccess(
 		dnsID:        binary.BigEndian.Uint16(packet[:2]),
 	}
 
-	b.mu.Lock()
+	b.pendingMu.Lock()
 	sample, ok := b.pending[key]
 	if ok {
 		delete(b.pending, key)
 	}
-	b.mu.Unlock()
+	b.pendingMu.Unlock()
 
 	if !ok || sample.serverKey == "" {
 		return
@@ -446,13 +468,16 @@ func (b *Balancer) TrackResolverFailure(
 	addr *net.UDPAddr,
 	localAddr string,
 	failedAt time.Time,
-	window time.Duration,
-	minObservations int,
-	autoDisable bool,
 ) {
 	if b == nil || len(packet) < 2 || addr == nil {
 		return
 	}
+
+	b.mu.RLock()
+	autoDisable := b.autoDisableEnabled
+	window := b.autoDisableTimeoutWindow
+	minObservations := b.autoDisableMinObservations
+	b.mu.RUnlock()
 
 	key := balancerResolverSampleKey{
 		resolverAddr: addr.String(),
@@ -460,12 +485,12 @@ func (b *Balancer) TrackResolverFailure(
 		dnsID:        binary.BigEndian.Uint16(packet[:2]),
 	}
 
-	b.mu.Lock()
+	b.pendingMu.Lock()
 	sample, ok := b.pending[key]
 	if ok {
 		delete(b.pending, key)
 	}
-	b.mu.Unlock()
+	b.pendingMu.Unlock()
 
 	if !ok || sample.serverKey == "" || sample.timedOut || !autoDisable {
 		return
@@ -476,21 +501,28 @@ func (b *Balancer) TrackResolverFailure(
 func (b *Balancer) CollectExpiredResolverTimeouts(
 	now time.Time,
 	tunnelPacketTimeout time.Duration,
-	checkInterval time.Duration,
-	window time.Duration,
-	minObservations int,
-	autoDisable bool,
 ) {
-	if b == nil || !autoDisable {
+	if b == nil {
+		return
+	}
+
+	b.mu.RLock()
+	autoDisable := b.autoDisableEnabled
+	checkInterval := b.autoDisableCheckInterval
+	window := b.autoDisableTimeoutWindow
+	minObservations := b.autoDisableMinObservations
+	b.mu.RUnlock()
+
+	if !autoDisable {
 		return
 	}
 
 	requestTimeout := resolverRequestTimeout(tunnelPacketTimeout, checkInterval, window)
 	ttl := resolverSampleTTL(tunnelPacketTimeout)
 
-	b.mu.Lock()
+	b.pendingMu.Lock()
 	timeoutObservations := b.prunePendingLocked(now, requestTimeout, ttl)
-	b.mu.Unlock()
+	b.pendingMu.Unlock()
 
 	for _, observation := range timeoutObservations {
 		b.ReportTimeoutWindow(observation.serverKey, observation.at, window, minObservations, 1)
@@ -503,12 +535,10 @@ func (b *Balancer) ResetServerStats(serverKey string) {
 		return
 	}
 
-	stats.mu.Lock()
-	stats.sent = 0
-	stats.acked = 0
-	stats.rttMicrosSum = 0
-	stats.rttCount = 0
-	stats.mu.Unlock()
+	stats.sent.Store(0)
+	stats.acked.Store(0)
+	stats.rttMicrosSum.Store(0)
+	stats.rttCount.Store(0)
 }
 
 func (b *Balancer) SeedConservativeStats(serverKey string) {
@@ -517,12 +547,10 @@ func (b *Balancer) SeedConservativeStats(serverKey string) {
 		return
 	}
 
-	stats.mu.Lock()
-	stats.sent = 10
-	stats.acked = 8
-	stats.rttMicrosSum = 0
-	stats.rttCount = 0
-	stats.mu.Unlock()
+	stats.sent.Store(10)
+	stats.acked.Store(8)
+	stats.rttMicrosSum.Store(0)
+	stats.rttCount.Store(0)
 }
 
 func (b *Balancer) GetBestConnection() (Connection, bool) {
@@ -698,16 +726,20 @@ func (b *Balancer) NoteStreamProgress(streamID uint16) {
 		return
 	}
 
-	b.mu.Lock()
-	if state, ok := b.streamRoutes[streamID]; ok && state != nil {
+	b.mu.RLock()
+	state := b.streamRoutes[streamID]
+	b.mu.RUnlock()
+
+	if state != nil {
+		state.mu.Lock()
 		state.ResendStreak = 0
+		state.mu.Unlock()
 	}
-	b.mu.Unlock()
 }
 
 func (b *Balancer) SelectTargets(packetType uint8, streamID uint16, requiredCount int) ([]Connection, error) {
-	b.mu.Lock()
-	defer b.mu.Unlock()
+	b.mu.RLock()
+	defer b.mu.RUnlock()
 
 	requiredCount = normalizeRequiredCount(len(b.activeIDs), requiredCount, 1)
 	if requiredCount <= 0 {
@@ -722,7 +754,18 @@ func (b *Balancer) SelectTargets(packetType uint8, streamID uint16, requiredCoun
 		return selected, nil
 	}
 
-	state := b.ensureStreamRouteLocked(streamID)
+	state := b.streamRoutes[streamID]
+	if state == nil {
+		selected := b.getUniqueConnectionsLocked(requiredCount)
+		if len(selected) == 0 {
+			return nil, ErrNoValidConnections
+		}
+		return selected, nil
+	}
+
+	state.mu.Lock()
+	defer state.mu.Unlock()
+
 	preferred, ok := b.selectPreferredConnectionForStreamLocked(packetType, state)
 	if !ok {
 		selected := b.getUniqueConnectionsLocked(requiredCount)
@@ -958,48 +1001,40 @@ func (b *Balancer) cachedTargetsForStreamLocked(state *balancerStreamRouteState,
 }
 
 func (b *Balancer) addActiveIndexLocked(idx int) {
-	if _, exists := b.activePos[idx]; exists {
-		return
+	for _, activeIdx := range b.activeIDs {
+		if activeIdx == idx {
+			return
+		}
 	}
-	b.activePos[idx] = len(b.activeIDs)
 	b.activeIDs = append(b.activeIDs, idx)
 }
 
 func (b *Balancer) addInactiveIndexLocked(idx int) {
-	if _, exists := b.inactivePos[idx]; exists {
-		return
+	for _, inactiveIdx := range b.inactiveIDs {
+		if inactiveIdx == idx {
+			return
+		}
 	}
-	b.inactivePos[idx] = len(b.inactiveIDs)
 	b.inactiveIDs = append(b.inactiveIDs, idx)
 }
 
 func (b *Balancer) removeActiveIndexLocked(idx int) {
-	pos, ok := b.activePos[idx]
-	if !ok || pos < 0 || pos >= len(b.activeIDs) {
-		return
-	}
-	lastPos := len(b.activeIDs) - 1
-	lastIdx := b.activeIDs[lastPos]
-	b.activeIDs[pos] = lastIdx
-	b.activeIDs = b.activeIDs[:lastPos]
-	delete(b.activePos, idx)
-	if pos < len(b.activeIDs) {
-		b.activePos[lastIdx] = pos
+	for i, activeIdx := range b.activeIDs {
+		if activeIdx == idx {
+			b.activeIDs[i] = b.activeIDs[len(b.activeIDs)-1]
+			b.activeIDs = b.activeIDs[:len(b.activeIDs)-1]
+			break
+		}
 	}
 }
 
 func (b *Balancer) removeInactiveIndexLocked(idx int) {
-	pos, ok := b.inactivePos[idx]
-	if !ok || pos < 0 || pos >= len(b.inactiveIDs) {
-		return
-	}
-	lastPos := len(b.inactiveIDs) - 1
-	lastIdx := b.inactiveIDs[lastPos]
-	b.inactiveIDs[pos] = lastIdx
-	b.inactiveIDs = b.inactiveIDs[:lastPos]
-	delete(b.inactivePos, idx)
-	if pos < len(b.inactiveIDs) {
-		b.inactivePos[lastIdx] = pos
+	for i, inactiveIdx := range b.inactiveIDs {
+		if inactiveIdx == idx {
+			b.inactiveIDs[i] = b.inactiveIDs[len(b.inactiveIDs)-1]
+			b.inactiveIDs = b.inactiveIDs[:len(b.inactiveIDs)-1]
+			break
+		}
 	}
 }
 
@@ -1494,29 +1529,34 @@ func (s *connectionStats) snapshot() (sent uint64, acked uint64, rttMicrosSum ui
 		return 0, 0, 0, 0
 	}
 
-	s.mu.RLock()
-	sent = s.sent
-	acked = s.acked
-	rttMicrosSum = s.rttMicrosSum
-	rttCount = s.rttCount
-	s.mu.RUnlock()
+	sent = s.sent.Load()
+	acked = s.acked.Load()
+	rttMicrosSum = s.rttMicrosSum.Load()
+	rttCount = s.rttCount.Load()
 	return sent, acked, rttMicrosSum, rttCount
 }
 
-func (s *connectionStats) applyHalfLifeLocked() {
+func (s *connectionStats) applyHalfLife() {
 	if s == nil {
 		return
 	}
-	if s.sent <= connectionStatsHalfLifeThreshold &&
-		s.acked <= connectionStatsHalfLifeThreshold &&
-		s.rttCount <= connectionStatsHalfLifeThreshold {
+
+	sent := s.sent.Load()
+	acked := s.acked.Load()
+	rttCount := s.rttCount.Load()
+
+	if sent <= connectionStatsHalfLifeThreshold &&
+		acked <= connectionStatsHalfLifeThreshold &&
+		rttCount <= connectionStatsHalfLifeThreshold {
 		return
 	}
 
-	s.sent /= 2
-	s.acked /= 2
-	s.rttMicrosSum /= 2
-	s.rttCount /= 2
+	// For atomics without a lock, halving might lose a concurrent increment.
+	// Since stats are only statistical decay, this is perfectly acceptable.
+	s.sent.Store(sent / 2)
+	s.acked.Store(acked / 2)
+	s.rttMicrosSum.Store(s.rttMicrosSum.Load() / 2)
+	s.rttCount.Store(rttCount / 2)
 }
 
 func (b *Balancer) nextRandom() uint64 {

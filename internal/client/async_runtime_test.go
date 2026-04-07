@@ -139,7 +139,7 @@ func TestTrackResolverSendBoundsResolverPendingGrowth(t *testing.T) {
 	c.balancer.mu.Unlock()
 
 	packet := []byte{0x12, 0x34}
-	c.balancer.TrackResolverSend(packet, "127.0.0.1:5300", "", "resolver-a", base, c.tunnelPacketTimeout, c.autoDisableCheckInterval(), c.autoDisableTimeoutWindow())
+	c.balancer.TrackResolverSend(packet, "127.0.0.1:5300", "", "resolver-a", base, c.tunnelPacketTimeout)
 
 	c.balancer.mu.RLock()
 	pendingCount := len(c.balancer.pending)

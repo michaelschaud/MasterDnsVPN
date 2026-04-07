@@ -602,35 +602,3 @@ func (c *Client) BuildConnectionMap() error {
 
 	return nil
 }
-
-func (c *Client) autoDisableTimeoutWindow() time.Duration {
-	if c == nil || !c.cfg.AutoDisableTimeoutServers {
-		return 0
-	}
-	window := time.Duration(c.cfg.AutoDisableTimeoutWindowSeconds * float64(time.Second))
-	if window <= 0 {
-		return 0
-	}
-	return window
-}
-
-func (c *Client) autoDisableCheckInterval() time.Duration {
-	if c == nil || !c.cfg.AutoDisableTimeoutServers {
-		return 0
-	}
-	interval := time.Duration(c.cfg.AutoDisableCheckIntervalSeconds * float64(time.Second))
-	if interval <= 0 {
-		return 0
-	}
-	return interval
-}
-
-func (c *Client) autoDisableMinObservations() int {
-	if c == nil {
-		return 1
-	}
-	if c.cfg.AutoDisableMinObservations < 1 {
-		return 1
-	}
-	return c.cfg.AutoDisableMinObservations
-}
