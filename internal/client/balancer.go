@@ -172,6 +172,10 @@ func (b *Balancer) InactiveCount() int {
 	return len(snap.inactive)
 }
 
+func (b *Balancer) TotalCount() int {
+	return b.size
+}
+
 func (b *Balancer) ConnectionCount() int {
 	snap := b.snapshot.Load()
 	if snap == nil {
@@ -485,7 +489,33 @@ func (b *Balancer) GetAllInactiveConnections() []Connection {
 	return snapshotConnections(snap.connections, snap.inactive)
 }
 
-func (b *Balancer) GetAllConnections() []Connection {
+func (b *Balancer) ActiveConnections() []Connection {
+	snap := b.snapshot.Load()
+	if snap == nil || len(snap.active) == 0 {
+		return nil
+	}
+
+	result := make([]Connection, len(snap.active))
+	for i, idx := range snap.active {
+		result[i] = snap.connections[idx]
+	}
+	return result
+}
+
+func (b *Balancer) InactiveConnections() []Connection {
+	snap := b.snapshot.Load()
+	if snap == nil || len(snap.inactive) == 0 {
+		return nil
+	}
+
+	result := make([]Connection, len(snap.inactive))
+	for i, idx := range snap.inactive {
+		result[i] = snap.connections[idx]
+	}
+	return result
+}
+
+func (b *Balancer) AllConnections() []Connection {
 	snap := b.snapshot.Load()
 	if snap == nil {
 		return nil

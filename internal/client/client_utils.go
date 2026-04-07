@@ -564,13 +564,6 @@ func (c *Client) PrintBanner() {
 	c.log.Infof("📡 <cyan>Loaded Resolvers:</cyan> <yellow>%d endpoints.</yellow>", len(c.cfg.Resolvers))
 }
 
-func (c *Client) Connections() []Connection {
-	if c.balancer == nil {
-		return nil
-	}
-	return c.balancer.GetAllConnections()
-}
-
 // BuildConnectionMap iterates through all domains and resolvers in the configuration
 // and builds a comprehensive list of unique Connection objects, then entrusts them to the Balancer.
 func (c *Client) BuildConnectionMap() error {
