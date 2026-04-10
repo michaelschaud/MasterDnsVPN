@@ -448,14 +448,14 @@ sudo journalctl -u masterdnsvpn-client -f
 
 | پارامتر | مقدار نمونه | مقادیر مجاز / رفتار واقعی | توضیح کامل |
 | :--- | :--- | :--- | :--- |
-| `RESOLVER_BALANCING_STRATEGY` | `0` | فقط `0..4` | تعیین می‌کند کلاینت پکت‌هایش را روی resolverها چطور پخش کند.<br>`0` و `2` هر دو round-robin هستند.<br>`1` انتخاب تصادفی است.<br>`3` سعی می‌کند روی resolverهایی برود که loss کمتری داشته‌اند.<br>`4` بیشتر به resolverهای سریع‌تر گرایش دارد.<br>برای شرایط خیلی ناپایدار، معمولاً `3` یا `4` بهتر از `0` هستند. |
+| `RESOLVER_BALANCING_STRATEGY` | `2` | فقط `0..4` | تعیین می‌کند کلاینت پکت‌هایش را روی resolverها چطور پخش کند.<br>`0` و `2` هر دو round-robin هستند.<br>`1` انتخاب تصادفی است.<br>`3` سعی می‌کند روی resolverهایی برود که loss کمتری داشته‌اند.<br>`4` بیشتر به resolverهای سریع‌تر گرایش دارد.<br>برای شرایط خیلی ناپایدار، معمولاً `3` یا `4` بهتر از `0` هستند. |
 | `PACKET_DUPLICATION_COUNT` | `2` | clamp به `1..8` | هر پکت عادی تونل چند بار روی resolverهای مختلف/مسیرهای مختلف ارسال شود.<br>عدد بالاتر شانس رسیدن پکت را بیشتر می‌کند، اما ترافیک و فشار CPU را هم بالا می‌برد.<br>در شبکه خوب، `1` یا `2` کافی است؛ در شبکه خیلی بد، `3` تا `6` می‌تواند مفید باشد. |
-| `SETUP_PACKET_DUPLICATION_COUNT` | `3` | clamp به `[PACKET_DUPLICATION_COUNT, 8]` | فقط برای پکت‌های شروع اتصال مثل `STREAM_SYN` و `SOCKS5_SYN` است.<br>از آن‌جا که از دست رفتن setup خیلی آزاردهنده است، معمولاً این عدد را کمی بالاتر از duplication عادی می‌گذارند.<br>اگر کمتر از duplication عادی بدهید، کد آن را بالا می‌کشد. |
+| `SETUP_PACKET_DUPLICATION_COUNT` | `2` | clamp به `[PACKET_DUPLICATION_COUNT, 8]` | فقط برای پکت‌های شروع اتصال مثل `STREAM_SYN` و `SOCKS5_SYN` است.<br>از آن‌جا که از دست رفتن setup خیلی آزاردهنده است، معمولاً این عدد را کمی بالاتر از duplication عادی می‌گذارند.<br>اگر کمتر از duplication عادی بدهید، کد آن را بالا می‌کشد. |
 | `STREAM_RESOLVER_FAILOVER_RESEND_THRESHOLD` | `3` | clamp به `1..128` | اگر یک stream روی resolver ترجیحی خودش پشت سر هم resend بخورد، بعد از این آستانه کلاینت resolver ترجیحی آن stream را عوض می‌کند.<br>این مکانیزم باعث می‌شود یک stream روی resolver بد گیر نکند. |
-| `STREAM_RESOLVER_FAILOVER_COOLDOWN` | `8.0` | clamp به `0.1..120` ثانیه | حداقل فاصله بین دو بار failover برای یک stream است.<br>اگر خیلی کم باشد stream مدام resolver عوض می‌کند و سیستم ناپایدار می‌شود.<br>اگر خیلی زیاد باشد stream دیرتر از resolver بد جدا می‌شود. |
+| `STREAM_RESOLVER_FAILOVER_COOLDOWN` | `2.5` | clamp به `0.1..120` ثانیه | حداقل فاصله بین دو بار failover برای یک stream است.<br>اگر خیلی کم باشد stream مدام resolver عوض می‌کند و سیستم ناپایدار می‌شود.<br>اگر خیلی زیاد باشد stream دیرتر از resolver بد جدا می‌شود. |
 | `RECHECK_INACTIVE_SERVERS_ENABLED` | `true` | `true/false` | resolverهایی که در تست MTU اولیه یا در runtime غیرفعال شده‌اند، در پس‌زمینه دوباره امتحان شوند یا نه.<br>اگر خاموش باشد، resolverهای بد تا restart بعدی کمتر شانس بازگشت دارند. |
 | `AUTO_DISABLE_TIMEOUT_SERVERS` | `true` | `true/false` | اگر یک resolver در runtime فقط timeout تولید کند و هیچ success نداشته باشد، کلاینت می‌تواند موقتاً آن را از لیست فعال خارج کند.<br>این قابلیت برای جلوگیری از هدر رفتن packet روی resolver مرده است. |
-| `AUTO_DISABLE_TIMEOUT_WINDOW_SECONDS` | `90.0` | clamp به `1..86400` ثانیه | پنجره‌ای که در آن history timeout-only بررسی می‌شود.<br>اگر در این بازه فقط timeout ببینیم و شرط observation هم برقرار باشد، resolver غیرفعال می‌شود. |
+| `AUTO_DISABLE_TIMEOUT_WINDOW_SECONDS` | `30.0` | clamp به `1..86400` ثانیه | پنجره‌ای که در آن history timeout-only بررسی می‌شود.<br>اگر در این بازه فقط timeout ببینیم و شرط observation هم برقرار باشد، resolver غیرفعال می‌شود. |
 | `BASE_ENCODE_DATA` | `false` | `true/false` | اگر `true` باشد، payload قبل از قرار گرفتن داخل labelهای DNS به شکل base-safe encode می‌شود.<br>معمولاً لازم نیست، ولی بعضی resolverها با این حالت سازگارترند.<br>عوض کردن این گزینه روی اندازه payload اثر می‌گذارد و می‌تواند throughput را تغییر دهد. |
 
 ### ۳.۴.۵) بخش 🗜️ فشرده‌سازی
@@ -470,7 +470,7 @@ sudo journalctl -u masterdnsvpn-client -f
 
 | پارامتر | مقدار نمونه | مقادیر مجاز / رفتار واقعی | توضیح کامل |
 | :--- | :--- | :--- | :--- |
-| `MIN_UPLOAD_MTU` | `40` | نباید منفی باشد | حداقل MTU قابل قبول برای مسیر upload است.<br>اگر resolver فقط MTU کمتر از این را جواب بدهد، برای upload کنار گذاشته می‌شود.<br>عدد پایین‌تر پایداری را بیشتر می‌کند ولی سرعت را کم می‌کند. |
+| `MIN_UPLOAD_MTU` | `38` | نباید منفی باشد | حداقل MTU قابل قبول برای مسیر upload است.<br>اگر resolver فقط MTU کمتر از این را جواب بدهد، برای upload کنار گذاشته می‌شود.<br>عدد پایین‌تر پایداری را بیشتر می‌کند ولی سرعت را کم می‌کند. |
 | `MIN_DOWNLOAD_MTU` | `100` | نباید منفی باشد | همان مفهوم برای download.<br>اگر مقدار خیلی بالا باشد، resolverهای بیشتری از همان اول حذف می‌شوند. |
 | `MAX_UPLOAD_MTU` | `150` | نباید از `MIN_UPLOAD_MTU` کوچک‌تر باشد | سقف جست‌وجوی MTU برای upload در تست اولیه.<br>بازه‌ی خیلی بزرگ startup را طولانی‌تر می‌کند. |
 | `MAX_DOWNLOAD_MTU` | `500` | نباید از `MIN_DOWNLOAD_MTU` کوچک‌تر باشد | سقف جست‌وجوی MTU برای download.<br>اگر می‌دانید شبکه شما محدود است، کوچک‌تر کردن این مقدار startup را سریع‌تر می‌کند. |
@@ -506,12 +506,12 @@ sudo journalctl -u masterdnsvpn-client -f
 
 | پارامتر | مقدار نمونه | مقادیر مجاز / رفتار واقعی | توضیح کامل |
 | :--- | :--- | :--- | :--- |
-| `PING_AGGRESSIVE_INTERVAL_SECONDS` | `0.200` | clamp به `0.05..30` ثانیه | فاصله ping در حالتی که ارتباط تازه داغ است و می‌خواهیم RTT و liveness را با حساسیت بالا نگه داریم. |
+| `PING_AGGRESSIVE_INTERVAL_SECONDS` | `0.100` | clamp به `0.05..30` ثانیه | فاصله ping در حالتی که ارتباط تازه داغ است و می‌خواهیم RTT و liveness را با حساسیت بالا نگه داریم. |
 | `PING_LAZY_INTERVAL_SECONDS` | `0.750` | clamp به `[PING_AGGRESSIVE_INTERVAL_SECONDS, 60]` | وقتی ارتباط کمی آرام‌تر شد، به این فاصله می‌رسد. |
 | `PING_COOLDOWN_INTERVAL_SECONDS` | `2.0` | clamp به `[PING_LAZY_INTERVAL_SECONDS, 300]` | فاصله ping در فاز cooldown. |
 | `PING_COLD_INTERVAL_SECONDS` | `15.0` | clamp به `[PING_COOLDOWN_INTERVAL_SECONDS, 3600]` | وقتی session کاملاً idle شده، pingها با این فاصله فرستاده می‌شوند تا بار بی‌خودی کم شود. |
-| `PING_WARM_THRESHOLD_SECONDS` | `5.0` | clamp به `0.1..600` ثانیه | آستانه‌ای که runtime براساس آن تصمیم می‌گیرد هنوز warm هستیم یا نه. |
-| `PING_COOL_THRESHOLD_SECONDS` | `15.0` | clamp به `[PING_WARM_THRESHOLD_SECONDS, 1800]` | مرز ورود به فاز cool. |
+| `PING_WARM_THRESHOLD_SECONDS` | `8.0` | clamp به `0.1..600` ثانیه | آستانه‌ای که runtime براساس آن تصمیم می‌گیرد هنوز warm هستیم یا نه. |
+| `PING_COOL_THRESHOLD_SECONDS` | `20.0` | clamp به `[PING_WARM_THRESHOLD_SECONDS, 1800]` | مرز ورود به فاز cool. |
 | `PING_COLD_THRESHOLD_SECONDS` | `30.0` | clamp به `[PING_COOL_THRESHOLD_SECONDS, 3600]` | مرز ورود به فاز cold و ping بسیار کم‌فاصله. |
 
 ### ۳.۴.۹) بخش 🔄 ARQ، NACK و packing
@@ -524,12 +524,12 @@ sudo journalctl -u masterdnsvpn-client -f
 | `ARQ_MAX_RTO_SECONDS` | `5.0` | clamp به `[ARQ_INITIAL_RTO_SECONDS, 120]` | سقف RTO برای data. |
 | `ARQ_CONTROL_INITIAL_RTO_SECONDS` | `0.5` | clamp به `0.05..60` ثانیه | RTO اولیه برای packetهای control مثل close/ack/setup. |
 | `ARQ_CONTROL_MAX_RTO_SECONDS` | `3.0` | clamp به `[ARQ_CONTROL_INITIAL_RTO_SECONDS, 120]` | سقف RTO control. |
-| `ARQ_MAX_CONTROL_RETRIES` | `300` | clamp به `5..5000` | چند بار packetهای control اجازه retry داشته باشند. |
+| `ARQ_MAX_CONTROL_RETRIES` | `400` | clamp به `5..5000` | چند بار packetهای control اجازه retry داشته باشند. |
 | `ARQ_INACTIVITY_TIMEOUT_SECONDS` | `1800.0` | clamp به `30..86400` ثانیه | اگر stream/ARQ مدت زیادی idle باشد، inactivity timeout از این استفاده می‌کند. |
 | `ARQ_DATA_PACKET_TTL_SECONDS` | `2400.0` | clamp به `30..86400` ثانیه | اگر یک packet data خیلی طولانی در مسیر بماند و به نتیجه نرسد، بعد از این TTL دیگر ارزش retry ندارد. |
 | `ARQ_CONTROL_PACKET_TTL_SECONDS` | `1200.0` | clamp به `30..86400` ثانیه | همان مفهوم برای packetهای control. |
 | `ARQ_MAX_DATA_RETRIES` | `1200` | clamp به `60..100000` | سقف retry packetهای data. |
-| `ARQ_DATA_NACK_MAX_GAP` | `64` | clamp به `0..32` در کد فعلی | تعیین می‌کند اگر جلوتر از `rcvNxt` packet رسید، تا چه فاصله‌ای gap را با NACK اعلام کنیم.<br>`0` یعنی NACK data عملاً خاموش است.<br>نکته مهم: sample مقدار `64` دارد، ولی کد فعلی آن را حداکثر تا `32` clamp می‌کند. |
+| `ARQ_DATA_NACK_MAX_GAP` | `16` | clamp به `0..32` در کد فعلی | تعیین می‌کند اگر جلوتر از `rcvNxt` packet رسید، تا چه فاصله‌ای gap را با NACK اعلام کنیم.<br>`0` یعنی NACK data عملاً خاموش است.<br>نکته مهم: sample مقدار `64` دارد، ولی کد فعلی آن را حداکثر تا `32` clamp می‌کند. |
 | `ARQ_DATA_NACK_INITIAL_DELAY_SECONDS` | `0.4` | clamp به `0..30` ثانیه | تأخیر اولیه قبل از ارسال NACK برای پکت‌های داده گم‌شده. سرعت درخواست ارسال مجدد را کنترل می‌کند. |
 | `ARQ_DATA_NACK_REPEAT_SECONDS` | `0.5` | clamp به `0.1..30` ثانیه | برای یک sequence گمشده، NACK تکراری با چه فاصله‌ای دوباره ارسال شود. |
 | `ARQ_TERMINAL_DRAIN_TIMEOUT_SECONDS` | `120.0` | clamp به `10..3600` ثانیه | وقتی stream وارد حالت terminal شد، چقدر صبر کنیم تا bufferهای باقیمانده drain شوند. |
@@ -629,12 +629,12 @@ sudo journalctl -u masterdnsvpn-client -f
 
 | پارامتر | مقدار نمونه | مقادیر مجاز / رفتار واقعی | توضیح کامل |
 | :--- | :--- | :--- | :--- |
-| `MAX_PACKETS_PER_BATCH` | `8` | اگر `<1` باشد fallback | حداکثر تعداد control blockهایی که سرور در یک پاسخ packed می‌کند.<br>نکته مهم: اگر مقدار نامعتبر بدهید، fallback واقعی کد `20` است. |
+| `MAX_PACKETS_PER_BATCH` | `5` | اگر `<1` باشد fallback | حداکثر تعداد control blockهایی که سرور در یک پاسخ packed می‌کند.<br>نکته مهم: اگر مقدار نامعتبر بدهید، fallback واقعی کد `20` است. |
 | `PACKET_BLOCK_CONTROL_DUPLICATION` | `1` | clamp به `1..16` | آخرین packed control block چند turn پشت‌سرهم تکرار شود.<br>`1` یعنی عملاً duplication خاموش است.<br>در شبکه lossy برای رسیدن ACK/closeها مفید است. |
 | `STREAM_SETUP_ACK_TTL_SECONDS` | `400.0` | clamp به `1..86400` ثانیه | TTL packetهای ACK مربوط به setup stream. |
 | `STREAM_RESULT_PACKET_TTL_SECONDS` | `300.0` | clamp به `1..86400` ثانیه | TTL packetهای result مثل connect success/failure که باید به کلاینت برسند. |
 | `STREAM_FAILURE_PACKET_TTL_SECONDS` | `120.0` | clamp به `1..86400` ثانیه | TTL packetهای failure برای setup/outbound. |
-| `ARQ_WINDOW_SIZE` | `600` | clamp به `1..16384` | اندازه پنجره ARQ هر stream در سرور. |
+| `ARQ_WINDOW_SIZE` | `800` | clamp به `1..16384` | اندازه پنجره ARQ هر stream در سرور. |
 | `ARQ_INITIAL_RTO_SECONDS` | `1` | clamp به `0.05..60` ثانیه | RTO اولیه packetهای data. |
 | `ARQ_MAX_RTO_SECONDS` | `5.0` | clamp به `[ARQ_INITIAL_RTO_SECONDS, 120]` | سقف RTO data. |
 | `ARQ_CONTROL_INITIAL_RTO_SECONDS` | `0.5` | clamp به `0.05..60` ثانیه | RTO اولیه packetهای control. |
@@ -644,9 +644,9 @@ sudo journalctl -u masterdnsvpn-client -f
 | `ARQ_DATA_PACKET_TTL_SECONDS` | `2400.0` | clamp به `30..86400` ثانیه | TTL packetهای data. |
 | `ARQ_CONTROL_PACKET_TTL_SECONDS` | `1200.0` | clamp به `30..86400` ثانیه | TTL packetهای control. |
 | `ARQ_MAX_DATA_RETRIES` | `1200` | clamp به `60..100000` | سقف retry packetهای data. |
-| `ARQ_DATA_NACK_MAX_GAP` | در sample نیامده | clamp به `0..32` | اگر packetهای out-of-order برسند، تا چه فاصله‌ای gap با NACK گزارش شود.<br>این پارامتر در کد هست و در README قبلی جا افتاده بود؛ اگر لازم دارید می‌توانید به sample config هم اضافه‌اش کنید. |
+| `ARQ_DATA_NACK_MAX_GAP` | `16` | clamp به `0..255` | اگر packetهای out-of-order برسند، تا چه فاصله‌ای gap با NACK گزارش شود.<br>این پارامتر در کد هست و در README قبلی جا افتاده بود؛ اگر لازم دارید می‌توانید به sample config هم اضافه‌اش کنید. |
 | `ARQ_DATA_NACK_INITIAL_DELAY_SECONDS` | `0.4` | clamp به `0..30` ثانیه | تأخیر اولیه قبل از ارسال NACK برای پکت‌های داده گم‌شده. سرعت درخواست ارسال مجدد را کنترل می‌کند. |
-| `ARQ_DATA_NACK_REPEAT_SECONDS` | در sample نیامده | clamp به `0.1..30` ثانیه | برای یک sequence گمشده، NACK تکراری با چه فاصله‌ای دوباره صادر شود.<br>این هم در کد فعال است و باید در مستندات باشد. |
+| `ARQ_DATA_NACK_REPEAT_SECONDS` | `1.0` | clamp به `0.1..30` ثانیه | برای یک sequence گمشده، NACK تکراری با چه فاصله‌ای دوباره صادر شود.<br>این هم در کد فعال است و باید در مستندات باشد. |
 | `ARQ_TERMINAL_DRAIN_TIMEOUT_SECONDS` | `120.0` | clamp به `10..3600` ثانیه | بعد از terminal شدن stream، سرور چقدر برای drain شدن queueها صبر کند. |
 | `ARQ_TERMINAL_ACK_WAIT_TIMEOUT_SECONDS` | `90.0` | clamp به `5..3600` ثانیه | بعد از close terminal، چقدر برای ACK نهایی صبر کند. |
 
@@ -660,7 +660,7 @@ sudo journalctl -u masterdnsvpn-client -f
 ## بخش ۳.۶: 🧪 تست و پیدا کردن و اسکن ریزالور
 
 پیدا کردن ریزالور و استفاده از ریزالور مناسب یکی از مهمترین بخش های پروژه های مبنتی بر تونل DNS است. در این پروژه، کلاینت خودش به‌صورت خودکار ریزالورهای سالم را پیدا می‌کند و MTU آن‌ها را تست می‌کند.
-شما به کمک این قابلیت کلاینت میتوانید ریزالورهای سالم را پیدا کنید، اگر قصد دارید، ریزالورهای خود را تست کنید و یا ریزالور های یک رنج را پیدا کنید، 
+شما به کمک این قابلیت کلاینت میتوانید ریزالورهای سالم را پیدا کنید، اگر قصد دارید، ریزالورهای خود را تست کنید و یا ریزالور های یک رنج را پیدا کنید،
 کافیست در فایل `client_resolvers.txt` تمام آی پی ها را به صورت خط به خط وارد کنید.
 
 سپس از فایل `client_config.toml` فعلی خود یک پشتیبان بگیرید و فایل را با ویرایشگر متن باز کرده و مقادیر زیر را پیدا کرده و با مقدار های پشنهادی زیر جایگزین کنید:
@@ -707,7 +707,7 @@ MTU_TEST_TIMEOUT = 1.0
 
 ---
 
-## بخش ۳.۶: ⚡ درک بهتر از MTU و تنظیمات طلایی برای اجرای سریع 
+## بخش ۳.۶: ⚡ درک بهتر از MTU و تنظیمات طلایی برای اجرای سریع
 
 این پروژه به‌شدت به MTU مناسب وابسته است. اگر MTU را خیلی بالا بگیرید:
 
@@ -758,7 +758,7 @@ MTU_TEST_TIMEOUT = 1.0
 - همچنین میتوانید پورت پیشفرض `LISTEN_PORT` را تغییر دهید تا کمتر در معرض حملات خودکار باشد.
 - اگر دستگاه‌ها به هم وصل نمی‌شوند، firewall سیستم را بررسی کنید.
 
---- 
+---
 
 # بخش ۵: 🖥️ نکات و توضیحات جانبی
 
@@ -805,7 +805,7 @@ sudo systemctl restart systemd-resolved
 
 ---
 
-## بخش ۶: 🛠️ معماری و نحوهٔ کار سیستم 
+## بخش ۶: 🛠️ معماری و نحوهٔ کار سیستم
 
 پروژه **MasterDnsVPN** با ترکیب Session Multiplexing، Resolver Balancing، Packet Duplication، لایه‌ی ARQ اختصاصی و Deferred Session Runtime روی بستر UDP/DNS محدودیت‌های تونل‌های معمول را دور می‌زند.
 
@@ -891,7 +891,7 @@ sequenceDiagram
 
 ---
 
-## بخش ۷: ⚙️ نکات فنی پیشرفته 
+## بخش ۷: ⚙️ نکات فنی پیشرفته
 
 - ⚡ **اتصال مستقیم یا از طریق SOCKS5 خارجی:** اگر `USE_EXTERNAL_SOCKS5 = false` باشد، سرور مستقیم به مقصد وصل می‌شود. اگر `true` باشد، از SOCKS5 خارجی عبور می‌کند، به صورت عمومی برنامه نیازی به نصب یا استفاده از سرور ساکس خارجی ندارد، پس میتوانید این گزینه را خاموش نگه دارید.
 - 🧠 **بخش Resolver failover روی هر stream:** اگر یک stream روی resolver بد گیر کند، resolver ترجیحی‌اش می‌تواند جابه‌جا شود.

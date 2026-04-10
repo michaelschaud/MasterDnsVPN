@@ -1,4 +1,4 @@
-# MasterDnsVPN Project 🔐
+﻿# MasterDnsVPN Project 🔐
 
 ## | [نسخه فارسی](https://github.com/masterking32/MasterDnsVPN/blob/main/README_FA.MD) | [English Version](https://github.com/masterking32/MasterDnsVPN/blob/main/README.MD) |
 
@@ -460,14 +460,14 @@ These settings are critical on the server:
 
 | Parameter | Sample Value | Allowed Values / Real Behavior | Full Explanation |
 | :--- | :--- | :--- | :--- |
-| `RESOLVER_BALANCING_STRATEGY` | `0` | `0..4` | Chooses how resolvers are selected.<br>`0/2` = Round Robin, `1` = Random, `3` = Least Loss, `4` = Lowest Latency.<br>Loss/latency modes become useful after the client gathers runtime statistics. |
-| `PACKET_DUPLICATION_COUNT` | `5` | clamp to valid range in code | Normal outgoing packet duplication count.<br>Higher values increase traffic cost but improve survivability on weak links. |
-| `SETUP_PACKET_DUPLICATION_COUNT` | `5` | clamp to valid range in code | Similar to `PACKET_DUPLICATION_COUNT`, but used for setup-sensitive packets such as stream creation and other critical control events. |
+| `RESOLVER_BALANCING_STRATEGY` | `2` | `0..4` | Chooses how resolvers are selected.<br>`0/2` = Round Robin, `1` = Random, `3` = Least Loss, `4` = Lowest Latency.<br>Loss/latency modes become useful after the client gathers runtime statistics. |
+| `PACKET_DUPLICATION_COUNT` | `2` | clamp to valid range in code | Normal outgoing packet duplication count.<br>Higher values increase traffic cost but improve survivability on weak links. |
+| `SETUP_PACKET_DUPLICATION_COUNT` | `2` | clamp to valid range in code | Similar to `PACKET_DUPLICATION_COUNT`, but used for setup-sensitive packets such as stream creation and other critical control events. |
 | `STREAM_RESOLVER_FAILOVER_RESEND_THRESHOLD` | `2` | If `<1`, fallback applies | If a stream accumulates repeated resend pressure on the same preferred resolver, the client may fail over that stream to another resolver.<br>This threshold controls how quickly that happens. |
-| `STREAM_RESOLVER_FAILOVER_COOLDOWN` | `1.0` | If `<=0`, fallback applies | Minimum delay between two failovers for the same stream.<br>This prevents unstable oscillation between resolvers. |
+| `STREAM_RESOLVER_FAILOVER_COOLDOWN` | `2.5` | If `<=0`, fallback applies | Minimum delay between two failovers for the same stream.<br>This prevents unstable oscillation between resolvers. |
 | `RECHECK_INACTIVE_SERVERS_ENABLED` | `true` | `true/false` | Enables background rechecks for currently disabled or unhealthy resolvers.<br>If disabled, once a resolver becomes unusable, it will stay disabled until restart or manual rebuild. |
 | `AUTO_DISABLE_TIMEOUT_SERVERS` | `true` | `true/false` | Enables automatic disabling of resolvers that keep timing out and show no successful activity. |
-| `AUTO_DISABLE_TIMEOUT_WINDOW_SECONDS` | `180.0` | If `<=0`, fallback applies | Time window used to decide whether a resolver is “timeout only”.<br>If all observations in this window are timeouts, it may be disabled. |
+| `AUTO_DISABLE_TIMEOUT_WINDOW_SECONDS` | `30.0` | If `<=0`, fallback applies | Time window used to decide whether a resolver is timeout-only.<br>If all observations in this window are timeouts, it may be disabled. |
 | `BASE_ENCODE_DATA` | `false` | `true/false` | If enabled, payloads are encoded in a base-safe format before tunneling.<br>This usually reduces payload efficiency, but can help in strict resolver environments. |
 
 ### 3.4.5) 🗜️ Compression
@@ -482,12 +482,12 @@ These settings are critical on the server:
 
 | Parameter | Sample Value | Allowed Values / Real Behavior | Full Explanation |
 | :--- | :--- | :--- | :--- |
-| `MIN_UPLOAD_MTU` | `40` | positive integer | Smallest upload MTU the client accepts during resolver testing. |
+| `MIN_UPLOAD_MTU` | `38` | positive integer | Smallest upload MTU the client accepts during resolver testing. |
 | `MIN_DOWNLOAD_MTU` | `100` | positive integer | Smallest download MTU the client accepts during resolver testing. |
-| `MAX_UPLOAD_MTU` | `64` | positive integer | Upper bound for upload MTU testing. |
-| `MAX_DOWNLOAD_MTU` | `140` | positive integer | Upper bound for download MTU testing. |
+| `MAX_UPLOAD_MTU` | `150` | positive integer | Upper bound for upload MTU testing. |
+| `MAX_DOWNLOAD_MTU` | `500` | positive integer | Upper bound for download MTU testing. |
 | `MTU_TEST_RETRIES` | `2` | if invalid, fallback applies | Number of retries for each MTU probe. |
-| `MTU_TEST_TIMEOUT` | `4.0` | if invalid, fallback applies | Timeout for a single MTU probe. |
+| `MTU_TEST_TIMEOUT` | `2.0` | if invalid, fallback applies | Timeout for a single MTU probe. |
 | `MTU_TEST_PARALLELISM` | `16` | if invalid, fallback applies | Number of resolvers tested in parallel during MTU scanning.<br>Higher values scan faster but use more CPU/network and may produce more noisy failures. |
 | `SAVE_MTU_SERVERS_TO_FILE` | `false` | `true/false` | If enabled, successful resolver results are written to an output file. |
 | `MTU_SERVERS_FILE_NAME` | `"masterdnsvpn_success_test_{time}.log"` | string | Output file name template for successful MTU-tested resolvers. |
@@ -502,7 +502,7 @@ These settings are critical on the server:
 | :--- | :--- | :--- | :--- |
 | `RX_TX_WORKERS` | `4` | if invalid, fallback applies | Number of shared runtime workers used for both UDP tunnel reads and writes. |
 | `TUNNEL_PROCESS_WORKERS` | `6` | if invalid, fallback applies | Number of workers processing tunnel packets after read. |
-| `TUNNEL_PACKET_TIMEOUT_SECONDS` | `8.0` | if invalid, fallback applies | Overall timeout for tunnel packet handling. |
+| `TUNNEL_PACKET_TIMEOUT_SECONDS` | `10.0` | if invalid, fallback applies | Overall timeout for tunnel packet handling. |
 | `DISPATCHER_IDLE_POLL_INTERVAL_SECONDS` | `0.020` | if invalid, fallback applies | When there is nothing to send, the dispatcher sleeps for this interval before polling again. |
 | `RX_CHANNEL_SIZE` | `4096` | if invalid, fallback applies | Capacity of the incoming tunnel packet channel. |
 | `SOCKS_UDP_ASSOCIATE_READ_TIMEOUT_SECONDS` | `30.0` | if invalid, fallback applies | Read timeout for SOCKS UDP associate mode. |
@@ -518,34 +518,34 @@ These settings are critical on the server:
 
 | Parameter | Sample Value | Allowed Values / Real Behavior | Full Explanation |
 | :--- | :--- | :--- | :--- |
-| `PING_AGGRESSIVE_INTERVAL_SECONDS` | `0.300` | positive number | Fastest ping interval used in the hottest activity state. |
-| `PING_LAZY_INTERVAL_SECONDS` | `1.0` | positive number | Normal operating ping interval. |
-| `PING_COOLDOWN_INTERVAL_SECONDS` | `3.0` | positive number | Ping interval during cooldown. |
-| `PING_COLD_INTERVAL_SECONDS` | `30.0` | positive number | Ping interval when the session is cold/mostly idle. |
-| `PING_WARM_THRESHOLD_SECONDS` | `5.0` | positive number | Threshold after which the session is treated as warm. |
-| `PING_COOL_THRESHOLD_SECONDS` | `10.0` | positive number | Threshold after which the session is treated as cooling down. |
-| `PING_COLD_THRESHOLD_SECONDS` | `20.0` | positive number | Threshold after which the session is treated as cold. |
+| `PING_AGGRESSIVE_INTERVAL_SECONDS` | `0.100` | positive number | Fastest ping interval used in the hottest activity state. |
+| `PING_LAZY_INTERVAL_SECONDS` | `0.750` | positive number | Normal operating ping interval. |
+| `PING_COOLDOWN_INTERVAL_SECONDS` | `2.0` | positive number | Ping interval during cooldown. |
+| `PING_COLD_INTERVAL_SECONDS` | `15.0` | positive number | Ping interval when the session is cold/mostly idle. |
+| `PING_WARM_THRESHOLD_SECONDS` | `8.0` | positive number | Threshold after which the session is treated as warm. |
+| `PING_COOL_THRESHOLD_SECONDS` | `20.0` | positive number | Threshold after which the session is treated as cooling down. |
+| `PING_COLD_THRESHOLD_SECONDS` | `30.0` | positive number | Threshold after which the session is treated as cold. |
 
 ### 3.4.9) 🔄 ARQ and Packet Packing
 
 | Parameter | Sample Value | Allowed Values / Real Behavior | Full Explanation |
 | :--- | :--- | :--- | :--- |
 | `MAX_PACKETS_PER_BATCH` | `8` | if invalid, fallback applies | Maximum number of control items the client tries to batch in one packet turn. |
-| `ARQ_WINDOW_SIZE` | `2000` | valid positive range | ARQ send/receive window size per stream. |
+| `ARQ_WINDOW_SIZE` | `600` | valid positive range | ARQ send/receive window size per stream. |
 | `ARQ_INITIAL_RTO_SECONDS` | `1.0` | clamped in code | Initial retransmission timeout for data packets. |
-| `ARQ_MAX_RTO_SECONDS` | `8.0` | clamped in code | Maximum retransmission timeout for data packets. |
-| `ARQ_CONTROL_INITIAL_RTO_SECONDS` | `1.0` | clamped in code | Initial retransmission timeout for control packets. |
-| `ARQ_CONTROL_MAX_RTO_SECONDS` | `8.0` | clamped in code | Maximum retransmission timeout for control packets. |
-| `ARQ_MAX_CONTROL_RETRIES` | `80` | clamped in code | Maximum number of retries for control packets. |
+| `ARQ_MAX_RTO_SECONDS` | `5.0` | clamped in code | Maximum retransmission timeout for data packets. |
+| `ARQ_CONTROL_INITIAL_RTO_SECONDS` | `0.5` | clamped in code | Initial retransmission timeout for control packets. |
+| `ARQ_CONTROL_MAX_RTO_SECONDS` | `3.0` | clamped in code | Maximum retransmission timeout for control packets. |
+| `ARQ_MAX_CONTROL_RETRIES` | `400` | clamped in code | Maximum number of retries for control packets. |
 | `ARQ_INACTIVITY_TIMEOUT_SECONDS` | `1800.0` | clamped in code | Stream inactivity timeout. |
-| `ARQ_DATA_PACKET_TTL_SECONDS` | `1800.0` | clamped in code | TTL for data packets before they are abandoned. |
-| `ARQ_CONTROL_PACKET_TTL_SECONDS` | `900.0` | clamped in code | TTL for control packets. |
-| `ARQ_MAX_DATA_RETRIES` | `800` | clamped in code | Maximum retries for data packets. |
-| `ARQ_DATA_NACK_MAX_GAP` | `0` | clamped in code | Maximum gap size for NACK generation when packets arrive out of order. |
-| `ARQ_DATA_NACK_INITIAL_DELAY_SECONDS` | `0.4` | clamped in code | Initial delay before sending a NACK for missing data packets. Controls how eagerly the system requests retransmissions. |
-| `ARQ_DATA_NACK_REPEAT_SECONDS` | `2.0` | clamped in code | Minimum interval before repeating a NACK for the same missing sequence. |
-| `ARQ_TERMINAL_DRAIN_TIMEOUT_SECONDS` | `90.0` | clamped in code | After a stream becomes terminal, how long the client waits for queue drain. |
-| `ARQ_TERMINAL_ACK_WAIT_TIMEOUT_SECONDS` | `60.0` | clamped in code | How long the client waits for the final terminal ACK. |
+| `ARQ_DATA_PACKET_TTL_SECONDS` | `2400.0` | clamped in code | TTL for data packets before they are abandoned. |
+| `ARQ_CONTROL_PACKET_TTL_SECONDS` | `1200.0` | clamped in code | TTL for control packets. |
+| `ARQ_MAX_DATA_RETRIES` | `1200` | clamped in code | Maximum retries for data packets. |
+| `ARQ_DATA_NACK_MAX_GAP` | `16` | clamped in code | Maximum gap size for NACK generation when packets arrive out of order. |
+| `ARQ_DATA_NACK_INITIAL_DELAY_SECONDS` | `0.1` | clamped in code | Initial delay before sending a NACK for missing data packets. Controls how eagerly the system requests retransmissions. |
+| `ARQ_DATA_NACK_REPEAT_SECONDS` | `1.0` | clamped in code | Minimum interval before repeating a NACK for the same missing sequence. |
+| `ARQ_TERMINAL_DRAIN_TIMEOUT_SECONDS` | `120.0` | clamped in code | After a stream becomes terminal, how long the client waits for queue drain. |
+| `ARQ_TERMINAL_ACK_WAIT_TIMEOUT_SECONDS` | `90.0` | clamped in code | How long the client waits for the final terminal ACK. |
 
 ### 3.4.10) 🪵 Logging
 
@@ -641,12 +641,12 @@ These settings are critical on the server:
 
 | Parameter | Sample Value | Allowed Values / Real Behavior | Full Explanation |
 | :--- | :--- | :--- | :--- |
-| `MAX_PACKETS_PER_BATCH` | `8` | fallback if `<1` | Maximum number of control blocks the server tries to pack into one response.<br>Important note: if the value is invalid, the real code fallback is `20`. |
+| `MAX_PACKETS_PER_BATCH` | `5` | fallback if `<1` | Maximum number of control blocks the server tries to pack into one response.<br>Important note: if the value is invalid, the real code fallback is `20`. |
 | `PACKET_BLOCK_CONTROL_DUPLICATION` | `1` | clamp to `1..16` | How many extra turns the last packed control block should be repeated.<br>`1` effectively means duplication is off.<br>This is useful on lossy links so critical ACK/close data arrives more reliably. |
 | `STREAM_SETUP_ACK_TTL_SECONDS` | `400.0` | clamp to `1..86400` seconds | TTL of ACK packets related to stream setup. |
 | `STREAM_RESULT_PACKET_TTL_SECONDS` | `300.0` | clamp to `1..86400` seconds | TTL of result packets such as connect success/failure that must reach the client. |
 | `STREAM_FAILURE_PACKET_TTL_SECONDS` | `120.0` | clamp to `1..86400` seconds | TTL of failure packets for setup or outbound errors. |
-| `ARQ_WINDOW_SIZE` | `600` | clamp to `1..16384` | ARQ window size per stream on the server. |
+| `ARQ_WINDOW_SIZE` | `800` | clamp to `1..16384` | ARQ window size per stream on the server. |
 | `ARQ_INITIAL_RTO_SECONDS` | `1` | clamp to `0.05..60` seconds | Initial retransmission timeout for data packets. |
 | `ARQ_MAX_RTO_SECONDS` | `5.0` | clamp to `[ARQ_INITIAL_RTO_SECONDS, 120]` | Maximum retransmission timeout for data packets. |
 | `ARQ_CONTROL_INITIAL_RTO_SECONDS` | `0.5` | clamp to `0.05..60` seconds | Initial retransmission timeout for control packets. |
@@ -656,9 +656,9 @@ These settings are critical on the server:
 | `ARQ_DATA_PACKET_TTL_SECONDS` | `2400.0` | clamp to `30..86400` seconds | TTL for data packets. |
 | `ARQ_CONTROL_PACKET_TTL_SECONDS` | `1200.0` | clamp to `30..86400` seconds | TTL for control packets. |
 | `ARQ_MAX_DATA_RETRIES` | `1200` | clamp to `60..100000` | Maximum retries for data packets. |
-| `ARQ_DATA_NACK_MAX_GAP` | not shown in sample | clamp to `0..32` | If out-of-order packets arrive, this controls how large a missing gap may be reported with NACK.<br>This exists in code and was missing in older README versions. |
-| `ARQ_DATA_NACK_INITIAL_DELAY_SECONDS` | `0.4` | clamped in code | Initial delay before sending a NACK for missing data packets. Controls how eagerly the system requests retransmissions. |
-| `ARQ_DATA_NACK_REPEAT_SECONDS` | not shown in sample | clamp to `0.1..30` seconds | For a missing sequence, this defines how soon a repeated NACK may be issued again.<br>This is active in code and should be documented. |
+| `ARQ_DATA_NACK_MAX_GAP` | `16` | clamp to `0..255` | If out-of-order packets arrive, this controls how large a missing gap may be reported with NACK. |
+| `ARQ_DATA_NACK_INITIAL_DELAY_SECONDS` | `0.3` | clamped in code | Initial delay before sending a NACK for missing data packets. Controls how eagerly the system requests retransmissions. |
+| `ARQ_DATA_NACK_REPEAT_SECONDS` | `1.0` | clamp to `0.1..30` seconds | For a missing sequence, this defines how soon a repeated NACK may be issued again. |
 | `ARQ_TERMINAL_DRAIN_TIMEOUT_SECONDS` | `120.0` | clamp to `10..3600` seconds | After a stream becomes terminal, how long the server waits for queues to drain. |
 | `ARQ_TERMINAL_ACK_WAIT_TIMEOUT_SECONDS` | `90.0` | clamp to `5..3600` seconds | After terminal close, how long the server waits for the final ACK. |
 

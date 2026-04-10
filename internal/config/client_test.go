@@ -155,25 +155,25 @@ ENCRYPTION_KEY = "secret"
 		t.Fatalf("LoadClientConfig returned error: %v", err)
 	}
 
-	if cfg.LocalDNSCacheMaxRecords != 2000 {
-		t.Fatalf("unexpected local dns records default: got=%d want=%d", cfg.LocalDNSCacheMaxRecords, 2000)
+	if cfg.LocalDNSCacheMaxRecords != 10000 {
+		t.Fatalf("unexpected local dns records default: got=%d want=%d", cfg.LocalDNSCacheMaxRecords, 10000)
 	}
-	if cfg.ARQInitialRTOSeconds != 1.0 || cfg.ARQMaxRTOSeconds != 8.0 {
+	if cfg.ARQInitialRTOSeconds != 1.0 || cfg.ARQMaxRTOSeconds != 5.0 {
 		t.Fatalf("unexpected arq rto defaults: initial=%v max=%v", cfg.ARQInitialRTOSeconds, cfg.ARQMaxRTOSeconds)
 	}
-	if cfg.ARQDataNackMaxGap != 0 {
-		t.Fatalf("unexpected ARQ data NACK gap default: got=%d want=0", cfg.ARQDataNackMaxGap)
+	if cfg.ARQDataNackMaxGap != 16 {
+		t.Fatalf("unexpected ARQ data NACK gap default: got=%d want=16", cfg.ARQDataNackMaxGap)
 	}
 	if cfg.ARQDataNackRepeatSeconds != 1.0 {
 		t.Fatalf("unexpected ARQ data NACK repeat default: got=%v want=%v", cfg.ARQDataNackRepeatSeconds, 1.0)
 	}
-	if cfg.ARQMaxControlRetries != 80 || cfg.ARQMaxDataRetries != 800 {
+	if cfg.ARQMaxControlRetries != 400 || cfg.ARQMaxDataRetries != 1200 {
 		t.Fatalf("unexpected arq retry defaults: control=%d data=%d", cfg.ARQMaxControlRetries, cfg.ARQMaxDataRetries)
 	}
 	if cfg.CompressionMinSize != compression.DefaultMinSize {
 		t.Fatalf("unexpected compression min size default: got=%d want=%d", cfg.CompressionMinSize, compression.DefaultMinSize)
 	}
-	if cfg.MTUTestRetries != 1 || cfg.MTUTestTimeout != 1.0 || cfg.MTUTestParallelism != 1 {
+	if cfg.MTUTestRetries != 1 || cfg.MTUTestTimeout != 2.0 || cfg.MTUTestParallelism != 1 {
 		t.Fatalf("unexpected mtu defaults: retries=%d timeout=%v parallelism=%d", cfg.MTUTestRetries, cfg.MTUTestTimeout, cfg.MTUTestParallelism)
 	}
 	if cfg.MTUServersFileName != "masterdnsvpn_success_test_{time}.log" || cfg.MTUServersFileFormat != "{IP} - UP: {UP_MTU} DOWN: {DOWN-MTU}" {
