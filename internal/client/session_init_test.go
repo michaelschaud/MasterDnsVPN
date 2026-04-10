@@ -110,6 +110,9 @@ func TestApplySessionInitPacketAppliesServerClientPolicy(t *testing.T) {
 	if c.cfg.RX_TX_Workers != 4 || c.tunnelRX_TX_Workers != 4 {
 		t.Fatalf("unexpected worker clamp: cfg=%d runtime=%d", c.cfg.RX_TX_Workers, c.tunnelRX_TX_Workers)
 	}
+	if c.cfg.TunnelProcessWorkers != 5 || c.tunnelProcessWorkers != 5 {
+		t.Fatalf("unexpected process worker sync: cfg=%d runtime=%d", c.cfg.TunnelProcessWorkers, c.tunnelProcessWorkers)
+	}
 	if c.cfg.PingAggressiveIntervalSeconds < 0.049 || c.cfg.PingAggressiveIntervalSeconds > 0.051 {
 		t.Fatalf("unexpected ping min clamp: got=%f", c.cfg.PingAggressiveIntervalSeconds)
 	}
@@ -130,6 +133,27 @@ func TestApplySessionInitPacketAppliesServerClientPolicy(t *testing.T) {
 	}
 	if c.syncedUploadMTU != 150 || c.syncedDownloadMTU != 4000 {
 		t.Fatalf("unexpected synced mtu clamp: up=%d down=%d", c.syncedUploadMTU, c.syncedDownloadMTU)
+	}
+	if c.safeUploadMTU <= 0 {
+		t.Fatalf("expected safe upload mtu to be recomputed, got=%d", c.safeUploadMTU)
+	}
+	if c.maxPackedBlocks <= 0 {
+		t.Fatalf("expected max packed blocks to be recomputed, got=%d", c.maxPackedBlocks)
+	}
+	if cap(c.plannerQueue) != 96 {
+		t.Fatalf("unexpected planner queue capacity: got=%d want=%d", cap(c.plannerQueue), 96)
+	}
+	if cap(c.encodedTXChannel) != 96 {
+		t.Fatalf("unexpected writer queue capacity: got=%d want=%d", cap(c.encodedTXChannel), 96)
+	}
+	if cap(c.rxChannel) != c.cfg.EffectiveRXChannelSize() {
+		t.Fatalf("unexpected rx channel capacity: got=%d want=%d", cap(c.rxChannel), c.cfg.EffectiveRXChannelSize())
+	}
+	if c.orphanQueue == nil || c.orphanQueue.FastSize() != 0 {
+		t.Fatal("expected orphan queue to be rebuilt cleanly")
+	}
+	if c.dnsResponses == nil {
+		t.Fatal("expected dns response fragment store to be rebuilt")
 	}
 	if !bytes.Equal(payload[3:7], verifyCode[:]) {
 		t.Fatal("verify code should remain in legacy position")

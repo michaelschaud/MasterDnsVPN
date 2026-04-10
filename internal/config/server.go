@@ -517,7 +517,7 @@ func (c ServerConfig) EffectiveDNSRequestWorkers() int {
 		recommended = readerTarget
 	}
 
-	return clampInt(max(c.DNSRequestWorkers, recommended), 1, 64)
+	return clampInt(max(c.DNSRequestWorkers, recommended), 1, 256)
 }
 
 func (c ServerConfig) EffectiveDeferredSessionWorkers() int {
@@ -525,7 +525,7 @@ func (c ServerConfig) EffectiveDeferredSessionWorkers() int {
 	if c.ProtocolType == "SOCKS5" && recommended < 4 {
 		recommended = 4
 	}
-	return clampInt(max(c.DeferredSessionWorkers, recommended), 0, 64)
+	return clampInt(max(c.DeferredSessionWorkers, recommended), 0, 256)
 }
 
 func (c ServerConfig) EffectiveDeferredSessionQueueLimit() int {

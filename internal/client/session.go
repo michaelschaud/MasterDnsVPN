@@ -20,6 +20,8 @@ import (
 
 	"masterdnsvpn-go/internal/compression"
 	Enums "masterdnsvpn-go/internal/enums"
+	fragmentStore "masterdnsvpn-go/internal/fragmentstore"
+	"masterdnsvpn-go/internal/mlq"
 	VpnProto "masterdnsvpn-go/internal/vpnproto"
 )
 
@@ -229,21 +231,66 @@ func (c *Client) applySessionClientPolicy(policy VpnProto.SessionAcceptClientPol
 	c.cfg.CompressionMinSize = settings.CompressionMinSize
 	c.cfg.ARQInitialRTOSeconds = settings.ARQInitialRTOSeconds
 	c.cfg.ARQControlInitialRTOSeconds = settings.ARQControlInitialRTOSeconds
+	c.cfg.TunnelProcessWorkers = deriveSessionPolicyTunnelProcessWorkers(c.cfg.TunnelProcessWorkers, c.cfg.RX_TX_Workers)
+	c.tunnelProcessWorkers = c.cfg.TunnelProcessWorkers
+
+	c.syncSessionPolicyDerivedState()
+
+	c.logSessionClientPolicyChanges(before, settings, policy)
+}
+
+func (c *Client) syncSessionPolicyDerivedState() {
+	if c == nil {
+		return
+	}
 
 	if c.syncedUploadMTU > 0 {
 		c.syncedUploadMTU = min(c.syncedUploadMTU, c.cfg.MaxUploadMTU)
+		c.syncedUploadChars = c.encodedCharsForPayload(c.syncedUploadMTU)
+		c.safeUploadMTU = computeSafeUploadMTU(c.syncedUploadMTU, c.mtuCryptoOverhead)
+		c.maxPackedBlocks = VpnProto.CalculateMaxPackedBlocks(c.syncedUploadMTU, 80, c.cfg.MaxPacketsPerBatch)
+	} else {
+		c.syncedUploadChars = 0
+		c.safeUploadMTU = 0
+		c.maxPackedBlocks = 1
 	}
 
 	if c.syncedDownloadMTU > 0 {
 		c.syncedDownloadMTU = min(c.syncedDownloadMTU, c.cfg.MaxDownloadMTU)
 	}
 
-	if c.syncedUploadMTU > 0 {
-		c.safeUploadMTU = computeSafeUploadMTU(c.syncedUploadMTU, c.mtuCryptoOverhead)
-		c.maxPackedBlocks = VpnProto.CalculateMaxPackedBlocks(c.syncedUploadMTU, 80, c.cfg.MaxPacketsPerBatch)
+	c.closeResolverConnPools()
+
+	if c.asyncCancel != nil {
+		return
 	}
 
-	c.logSessionClientPolicyChanges(before, settings, policy)
+	c.plannerQueue = make(chan plannerTask, max(24, c.cfg.RX_TX_Workers*24))
+	c.encodedTXChannel = make(chan writerTask, max(24, c.cfg.RX_TX_Workers*24))
+	c.rxChannel = make(chan asyncReadPacket, c.cfg.EffectiveRXChannelSize())
+	c.orphanQueue = mlq.New[VpnProto.Packet](c.cfg.EffectiveOrphanQueueInitialCapacity())
+	c.dnsResponses = fragmentStore.New[dnsFragmentKey](c.cfg.EffectiveDNSResponseFragmentStoreCap())
+}
+
+func deriveSessionPolicyTunnelProcessWorkers(current int, rxWorkers int) int {
+	if rxWorkers < 1 {
+		rxWorkers = 1
+	}
+
+	recommended := max(4, rxWorkers+1)
+	if recommended > 128 {
+		recommended = 128
+	}
+	if current < recommended {
+		current = recommended
+	}
+	if current < rxWorkers {
+		return rxWorkers
+	}
+	if current > 128 {
+		return 128
+	}
+	return current
 }
 
 func (c *Client) logSessionClientPolicyChanges(before VpnProto.SessionAcceptClientSettings, after VpnProto.SessionAcceptClientSettings, policy VpnProto.SessionAcceptClientPolicy) {

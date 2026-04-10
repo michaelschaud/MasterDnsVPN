@@ -28,6 +28,7 @@ type ClientConfig struct {
 	ConfigPath                            string            `toml:"-"`
 	ResolversFilePath                     string            `toml:"-"`
 	explicitRX_TX_Workers                 bool              `toml:"-"`
+	explicitTunnelProcessWorkers          bool              `toml:"-"`
 	ProtocolType                          string            `toml:"PROTOCOL_TYPE"`
 	Domains                               []string          `toml:"DOMAINS"`
 	ListenIP                              string            `toml:"LISTEN_IP"`
@@ -165,7 +166,7 @@ func defaultClientConfig() ClientConfig {
 		MTUTestTimeout:                        4.0,
 		MTUTestParallelism:                    16,
 		RX_TX_Workers:                         6,
-		TunnelProcessWorkers:                  4,
+		TunnelProcessWorkers:                  0,
 		TunnelPacketTimeoutSec:                8.0,
 		DispatcherIdlePollIntervalSeconds:     0.020,
 		PingAggressiveIntervalSeconds:         0.300,
@@ -240,6 +241,7 @@ func loadClientConfigFile(filename string) (ClientConfig, error) {
 	cfg.ConfigDir = filepath.Dir(path)
 	cfg.ResolversFilePath = ""
 	cfg.explicitRX_TX_Workers = meta.IsDefined("RX_TX_WORKERS")
+	cfg.explicitTunnelProcessWorkers = meta.IsDefined("TUNNEL_PROCESS_WORKERS")
 	return cfg, nil
 }
 
@@ -255,6 +257,9 @@ func LoadClientConfigWithOverrides(filename string, overrides ClientConfigOverri
 	if len(overrides.Values) > 0 {
 		if err := applyClientConfigOverrideValues(&cfg, overrides.Values); err != nil {
 			return cfg, err
+		}
+		if _, ok := overrides.Values["TunnelProcessWorkers"]; ok {
+			cfg.explicitTunnelProcessWorkers = true
 		}
 	}
 
@@ -366,8 +371,12 @@ func finalizeClientConfig(cfg ClientConfig) (ClientConfig, error) {
 		cfg.RX_TX_Workers = legacyRX_TX_Workers
 	}
 
-	cfg.RX_TX_Workers = clampInt(defaultIntBelow(cfg.RX_TX_Workers, 1, 6), 1, 64)
-	cfg.TunnelProcessWorkers = max(clampInt(defaultIntBelow(cfg.TunnelProcessWorkers, 1, 4), 1, 64), cfg.RX_TX_Workers)
+	cfg.RX_TX_Workers = clampInt(defaultIntBelow(cfg.RX_TX_Workers, 1, 6), 1, 128)
+	cfg.TunnelProcessWorkers = deriveConfiguredTunnelProcessWorkers(
+		cfg.TunnelProcessWorkers,
+		cfg.RX_TX_Workers,
+		cfg.explicitTunnelProcessWorkers,
+	)
 
 	cfg.TunnelPacketTimeoutSec = clampFloat(defaultFloatAtMostZero(cfg.TunnelPacketTimeoutSec, 8.0), 0.5, 120.0)
 	cfg.DispatcherIdlePollIntervalSeconds = clampFloat(defaultFloatAtMostZero(cfg.DispatcherIdlePollIntervalSeconds, 0.020), 0.001, 1.0)
@@ -978,4 +987,23 @@ func clampFloat(value float64, minValue float64, maxValue float64) float64 {
 		return maxValue
 	}
 	return value
+}
+
+func deriveConfiguredTunnelProcessWorkers(current int, rxWorkers int, explicit bool) int {
+	recommended := deriveRecommendedTunnelProcessWorkers(rxWorkers)
+	if explicit {
+		current = clampInt(current, 1, 256)
+		if current < rxWorkers {
+			return rxWorkers
+		}
+		return current
+	}
+	return recommended
+}
+
+func deriveRecommendedTunnelProcessWorkers(rxWorkers int) int {
+	if rxWorkers < 1 {
+		rxWorkers = 1
+	}
+	return clampInt(max(4, rxWorkers+1), rxWorkers, 256)
 }

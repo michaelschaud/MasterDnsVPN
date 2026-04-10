@@ -312,6 +312,35 @@ TUNNEL_PROCESS_WORKERS = 2
 	}
 }
 
+func TestLoadClientConfigAutoDerivesTunnelProcessWorkersAboveRXTX(t *testing.T) {
+	dir := t.TempDir()
+
+	configPath := filepath.Join(dir, "client_config.toml")
+	resolversPath := filepath.Join(dir, "client_resolvers.txt")
+
+	if err := os.WriteFile(configPath, []byte(`
+PROTOCOL_TYPE = "SOCKS5"
+DOMAINS = ["v.domain.com"]
+DATA_ENCRYPTION_METHOD = 1
+ENCRYPTION_KEY = "secret"
+RX_TX_WORKERS = 6
+`), 0o644); err != nil {
+		t.Fatalf("WriteFile config failed: %v", err)
+	}
+	if err := os.WriteFile(resolversPath, []byte("8.8.8.8\n"), 0o644); err != nil {
+		t.Fatalf("WriteFile resolvers failed: %v", err)
+	}
+
+	cfg, err := LoadClientConfig(configPath)
+	if err != nil {
+		t.Fatalf("LoadClientConfig returned error: %v", err)
+	}
+
+	if cfg.TunnelProcessWorkers != 7 {
+		t.Fatalf("expected process workers to be auto-derived above RX/TX count: got=%d want=%d", cfg.TunnelProcessWorkers, 7)
+	}
+}
+
 func TestLoadClientConfigWithOverridesReplacesResolversDomainsAndMTURange(t *testing.T) {
 	dir := t.TempDir()
 
